@@ -15,21 +15,11 @@ import scipy
 
 # -------------- DATASET CLASS ---------------------------------------
 
-def get_normed_data(lr_ds, data_type, norm_input, sqrt_transform_in, root, mask_gcm):
+def get_normed_data(lr_ds, data_type, norm_input, sqrt_transform_in, root):
     lr_data = torch.flip(torch.from_numpy(lr_ds[data_type].data), [1])
     # data = torch.from_numpy(lr_ds[data_type].data)
     # bring lr_data to the right units
-    lr_data = correct_units(lr_data, data_type)
     lr_data_norm = normalise(lr_data, mode = "lr", data_type = data_type, sqrt_transform = sqrt_transform_in, norm_method = norm_input, root=root)
-
-    if mask_gcm:
-        mask_r = torch.ones(20)
-        mask_r[5:14] = 0
-        mask_c = torch.ones(36)
-        mask_c[10:26] = 0
-        lr_data_norm = lr_data_norm.view(lr_data_norm.shape[0], 20, 36)
-        lr_data_norm[:, mask_r == 1, :][:, :, mask_c == 1] = -1
-        lr_data_norm = lr_data_norm.view(lr_data_norm.shape[0], -1)
         
     return lr_data_norm
 
@@ -50,12 +40,10 @@ class DownscalingDatasetTwoStepNormed(Dataset):
     Parameters
     ----------
     - root: path to files
+    - domain: "ALPS" or "NZ"
+    - training_experiment: 'ESD_pseudo_reality' or 'Emulator_hist_future'
     - data_types: list of variables to load for high-res RCM data (e.g. ["pr", "tas"])
     - data_types_lr: list of variables to load for low-res GCM data (e.g. ["pr", "tas", "sfcWind", "rsds", "psl"])
-    - rcm: name of the rcm
-    - gcm: name of the gcm
-    - variant: variant name of the gcm run
-    - one_hot: one-hot encoding tensor for the (gcm, rcm) pair, shape (one_hot_dim,)
     - mode: "train", "test_interpolation" or "test_extrapolation" (used only to find correct folder for data loading)
     - norm_input: normalisation method for low-res GCM data
     - norm_output: normalisation method for high-res RCM data
@@ -63,14 +51,11 @@ class DownscalingDatasetTwoStepNormed(Dataset):
     - sqrt_transform_out: if True, apply square-root transform to high-res RCM data
     - kernel_size: kernel size for average pooling to coarsen high-res RCM data
     - kernel_size_hr: kernel size for additional coarsening of the target high-res RCM data (used in intermediate steps of enscale's super-resolution model)
-    - mask_gcm: if True, mask out ocean points in low-res GCM data (set to -1)
-    - one_hot_dim: dimension of the one-hot encoding (7 if separate GCM and RCM one-hot, 8 if joint one-hot for each (GCM, RCM) pair)
     - return_timepair: if True, return also the data for the next time step (used for temporal consistency training)
     - clip_quantile: if not None, clip high-res RCM data to the given quantile
     - logit: if True, apply logit transform to high-res RCM data (only useful if norm_output is "uniform" or "uniform_per_model")
     - normal: if True, apply normal transform to high-res RCM data (only useful norm_output is "uniform" or "uniform_per_model")
     - include_year: if True, include year as input feature (in addition to day of year)
-    - levels: list of pressure levels to load for 3D variables (e.g. "hus", "ua", "va", "zg")
     - only_winter: if True, load only data from December, January, February
     - stride_lr: stride for average pooling of low-res GCM data (default: kernel_size)
     - padding_lr: padding for average pooling of low-res GCM data (default: 0)
@@ -78,13 +63,11 @@ class DownscalingDatasetTwoStepNormed(Dataset):
     - precip_zeros: how to treat zeros in precipitation data when using norm_output="uniform" or "uniform_per_model"; also done separately and saved on disk (options: "random", "random_correlated", "constant")
     """
     def __init__(self, 
-                 root="/r/scratch/groups/nm/downscaling/cordex-ALPS-allyear",
+                 root="/r/scratch/users/mschillinger/data/cordexbench/",
+                 domain="ALPS",
+                 training_experiment = 'Emulator_hist_future',
                  data_types=["tas", "pr", "sfcWind", "rsds"],
-                 data_types_lr = ["pr", "tas", "sfcWind", "rsds", "psl"],
-                 rcm = "", 
-                 gcm = "", 
-                 variant = "r1i1p1",
-                 one_hot = None,
+                 data_types_lr = None,
                  mode = "train",
                  norm_input=None,
                  norm_output=None,
@@ -93,14 +76,11 @@ class DownscalingDatasetTwoStepNormed(Dataset):
                  # kernel_size=[16],
                  kernel_size=16,
                  kernel_size_hr=1,
-                 mask_gcm=False,
-                 one_hot_dim=7,
                  return_timepair=False,
                  clip_quantile=None, 
                  logit=False,
                  normal=False,
                  include_year=False,
-                 levels = [50000, 85000],
                  only_winter = False,
                  stride_lr = None,
                  padding_lr = None,
@@ -112,106 +92,101 @@ class DownscalingDatasetTwoStepNormed(Dataset):
         - In general, one has to pay attention with the orientation of the data: If one converts the data from a .nc file to a tensor, sometimes the first rows will correspond to South, sometimes to North.
         Therefore, we sometimes have to flip the data - we agree on "first rows = north.
         """
-        print("Loading data for RCM:", rcm, "GCM:", gcm)
         self.return_timepair = return_timepair
+        # {domain}_domain
+        DATA_PATH = root + f"/{domain}/{domain}_domain"
         if mode == "train":
-            file_suffix = "_train-period"
             folder = "train"
-        elif mode == "test_interpolation":
-            file_suffix = "_2030-2039"
-            folder = "test/interpolation"
-        elif mode == "test_extrapolation":
-            file_suffix = "_2090-2099"
-            folder = "test/extrapolation"
         else:
             raise ValueError("In DownscalingDatasetNormed: mode not recognised")
         
+        if training_experiment == 'ESD_pseudo_reality':
+            period_training = '1961-1980'
+        elif training_experiment == 'Emulator_hist_future':
+            period_training = '1961-1980_2080-2099'
+        else:
+            raise ValueError('Provide a valid date')
+
+        # Set the GCM
+        if domain == 'ALPS':
+            gcm_name = 'CNRM-CM5'
+        elif domain == 'NZ':
+            gcm_name = 'ACCESS-CM2'
+                
         hr_tensors = []
         hr_coarsened_tensors = []
         lr_tensors = []
-        for data_type in data_types:
-            # loop through variables and concatenate along first dimension
-            # shape in the end should be [num_variables, n_channels, image_size, image_size]
-            # n_channels is 1 for now, but 2 later after fft
-            
-            if norm_output == "uniform_per_model" or norm_output == "uniform":           
-                    # example: pr_day_EUR-11_ALADIN63_MPI-ESM-LR_r1i1p1_rcp85_ALPS_cordexgrid_train-period.nc
-                if mode == "train":
-                    folder_unif = "train_norm_unif"
-                elif mode == "test_interpolation":
-                    folder_unif = "test_norm_unif/interpolation"
-                elif mode == "test_extrapolation":
-                    folder_unif = "test_norm_unif/extrapolation"
-                assert not sqrt_transform_out
-                if norm_output == "uniform_per_model":
-                    assert not filter_outliers
-                    if data_type == "pr":
-                        #pr_day_EUR-11_CCLM4-8-17_MPI-ESM-LR_r1i1p1_rcp85_ALPS_cordexgrid_train-period_per-model-full-period_noisy.nc
-                        # pr_day_EUR-11_CCLM4-8-17_CNRM-CM5_r1i1p1_rcp85_ALPS_cordexgrid_train-period_per-model-full-period_noisy.nc
-                        hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_per-model-full-period_noisy.nc")
-                    else:
-                        #tas_day_EUR-11_ALADIN63_CNRM-CM5_r1i1p1_rcp85_ALPS_cordexgrid_train-period_subsample-per-model.nc
-                        hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-per-model.nc")    
-                else: 
-                    if data_type == "pr":
-                        if not filter_outliers:
-                            if precip_zeros == "random_correlated":
-                                hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-v2-random-correlated.nc")
-                            elif precip_zeros == "random":
-                                hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-v2-random.nc")
-                            elif precip_zeros == "constant":
-                                hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-v2.nc")
-                        else:
-                            hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-v2-random-filtered.nc")
-                    else:
-                        if not filter_outliers or data_type == "tas" or data_type == "sfcWind":
-                            hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-v2.nc")
-                        else:
-                            # rsds and filter outliers
-                            hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-v2-filtered.nc")
-                # flipping the data to have correct north-south orientation
-                hr_ds = xr.open_dataset(hr_path)
-                
-                if only_winter:
-                    months = np.float32(hr_ds.indexes['time'].strftime("%m")).astype("int")
-                    hr_ds = hr_ds.sel(time = (months == 12) | (months == 1) | (months == 2))
-                
-                hr_data = torch.flip(torch.from_numpy(hr_ds[data_type].data), [1])
-                hr_data_norm = hr_data.float().view(hr_data.shape[0], -1)
-                if logit:
-                    hr_data_norm = torch.logit(hr_data_norm)
-                elif normal:
-                    #hr_data_norm_notransf = torch.clone(hr_data_norm)
-                    hr_np = hr_data_norm.detach().cpu().numpy()
-                    hr_np_gauss = scipy.stats.norm.ppf(hr_np) # more stable than torch.Normal.icdf
-                    hr_data_norm = torch.from_numpy(hr_np_gauss).to(hr_data_norm.dtype).to(hr_data_norm.device)
-
-                    if torch.any(torch.isnan(hr_data_norm)) or torch.any(torch.isinf(hr_data_norm)):
-                        print("data issues (have nans)", rcm, gcm)
-                    
-            else:
+        # loop through variables and concatenate along first dimension
+        # shape in the end should be [num_variables, n_channels, image_size, image_size]
+        # n_channels is 1 for now, but 2 later after fft
+        
+        if norm_output == "uniform_per_model" or norm_output == "uniform": 
+            raise NotImplementedError("Please use norm_output unequal to uniform or uniform_per_model, as these have been removed for now.")          
                 # example: pr_day_EUR-11_ALADIN63_MPI-ESM-LR_r1i1p1_rcp85_ALPS_cordexgrid_train-period.nc
-                if not filter_outliers or data_type == "tas" or data_type == "sfcWind":
-                    hr_path = os.path.join (root, folder, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + ".nc")
+            if mode == "train":
+                folder_unif = "train_norm_unif"
+            elif mode == "test_interpolation":
+                folder_unif = "test_norm_unif/interpolation"
+            elif mode == "test_extrapolation":
+                folder_unif = "test_norm_unif/extrapolation"
+            assert not sqrt_transform_out
+            if norm_output == "uniform_per_model":
+                assert not filter_outliers
+                if data_type == "pr":
+                    #pr_day_EUR-11_CCLM4-8-17_MPI-ESM-LR_r1i1p1_rcp85_ALPS_cordexgrid_train-period_per-model-full-period_noisy.nc
+                    # pr_day_EUR-11_CCLM4-8-17_CNRM-CM5_r1i1p1_rcp85_ALPS_cordexgrid_train-period_per-model-full-period_noisy.nc
+                    hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_per-model-full-period_noisy.nc")
                 else:
-                    if mode == "train":
-                        folder_filtered = "train_outlier_filtered"
-                    elif mode == "test_interpolation":
-                        folder_filtered = "test_outlier_filtered/interpolation"
-                    elif mode == "test_extrapolation":
-                        folder_filtered = "test_outlier_filtered/extrapolation"
-                    hr_path = os.path.join(root, folder_filtered, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_filtered.nc")
+                    #tas_day_EUR-11_ALADIN63_CNRM-CM5_r1i1p1_rcp85_ALPS_cordexgrid_train-period_subsample-per-model.nc
+                    hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-per-model.nc")    
+            else: 
+                if data_type == "pr":
+                    if not filter_outliers:
+                        if precip_zeros == "random_correlated":
+                            hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-v2-random-correlated.nc")
+                        elif precip_zeros == "random":
+                            hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-v2-random.nc")
+                        elif precip_zeros == "constant":
+                            hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-v2.nc")
+                    else:
+                        hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-v2-random-filtered.nc")
+                else:
+                    if not filter_outliers or data_type == "tas" or data_type == "sfcWind":
+                        hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-v2.nc")
+                    else:
+                        # rsds and filter outliers
+                        hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-v2-filtered.nc")
+            # flipping the data to have correct north-south orientation
+            hr_ds = xr.open_dataset(hr_path)
+            
+            if only_winter:
+                months = np.float32(hr_ds.indexes['time'].strftime("%m")).astype("int")
+                hr_ds = hr_ds.sel(time = (months == 12) | (months == 1) | (months == 2))
+            
+            hr_data = torch.flip(torch.from_numpy(hr_ds[data_type].data), [1])
+            hr_data_norm = hr_data.float().view(hr_data.shape[0], -1)
+            if logit:
+                hr_data_norm = torch.logit(hr_data_norm)
+            elif normal:
+                #hr_data_norm_notransf = torch.clone(hr_data_norm)
+                hr_np = hr_data_norm.detach().cpu().numpy()
+                hr_np_gauss = scipy.stats.norm.ppf(hr_np) # more stable than torch.Normal.icdf
+                hr_data_norm = torch.from_numpy(hr_np_gauss).to(hr_data_norm.dtype).to(hr_data_norm.device)
 
-                # flipping the data to have correct north-south orientation
-                hr_ds = xr.open_dataset(hr_path)
+                if torch.any(torch.isnan(hr_data_norm)) or torch.any(torch.isinf(hr_data_norm)):
+                    print("data issues (have nans)", rcm, gcm)
                 
-                if only_winter:
-                    months = np.float32(hr_ds.indexes['time'].strftime("%m")).astype("int")
-                    hr_ds = hr_ds.sel(time = (months == 12) | (months == 1) | (months == 2))
-                
+        else:
+            # example: pr_day_EUR-11_ALADIN63_MPI-ESM-LR_r1i1p1_rcp85_ALPS_cordexgrid_train-period.nc
+            hr_path = f'{DATA_PATH}/{folder}/{training_experiment}/target/pr_tasmax_{gcm_name}_{period_training}.nc'
+            # hr_path = os.path.join (root, folder, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + ".nc")
+            # flipping the data to have correct north-south orientation
+            hr_ds = xr.open_dataset(hr_path)
+            
+            for data_type in data_types:
+    
                 hr_data = torch.flip(torch.from_numpy(hr_ds[data_type].data), [1])
                 hr_data = hr_data.float()
-                hr_data = correct_units(hr_data, data_type)
                 if data_type == "pr" and clip_quantile is not None:
                     # hr_data = torch.clamp(hr_data, torch.quantile(hr_data, 1 - clip_quantile).item(), torch.quantile(hr_data, clip_quantile).item())
                     # changed to batchwise clipping to shorten preprocessing time
@@ -247,28 +222,24 @@ class DownscalingDatasetTwoStepNormed(Dataset):
         hr_data_allvars = torch.concat(hr_tensors, dim = 1) # shape (n_timesteps, n_vars, spatial_dim), where spatial_dim = 128*128 or 128*128 + value_dim
         hr_data_coarsened_allvars = torch.concat(hr_coarsened_tensors, dim = 1)
 
-        for data_type in data_types_lr:
-            # low-res
-            lr_path = os.path.join(root, folder, data_type + "_day_" + gcm + "_" + variant + "_rcp85_EUROPE_g025" +  file_suffix + ".nc")
-            lr_ds = xr.open_dataset(lr_path)            
-                
-            if only_winter:
-                months = np.float32(lr_ds.indexes['time'].strftime("%m")).astype("int")
-                lr_ds = lr_ds.sel(time = (months == 12) | (months == 1) | (months == 2))
-                
-            if len(lr_ds.time) != hr_data.shape[0]:
-                print(rcm, gcm)
-                print("Length mismatch. Should investigate further!")
-                # pdb.set_trace()   
+        lr_path = f'{DATA_PATH}/{folder}/{training_experiment}/predictors/{gcm_name}_{period_training}.nc'
+        lr_ds = xr.open_dataset(lr_path)
+        
+        if len(lr_ds.time) != len(hr_ds.time):
+            print("Length mismatch. Should investigate further!")
+        
+        if data_types_lr is None:
+            # get all available variables except time and lat/lon
+            data_types_lr = list(lr_ds.data_vars)
+            data_types_lr.remove('time')
+            data_types_lr.remove('lat')
+            data_types_lr.remove('lon')    
             
-            if data_type in ["hus", "ua", "va", "zg"]:
-                for level in levels:
-                    lr_ds_level = lr_ds.sel(plev=level)
-                    lr_data_norm = get_normed_data(lr_ds_level, data_type, norm_input, sqrt_transform_in, root, mask_gcm)
-                    lr_tensors.append(lr_data_norm.unsqueeze(1)) 
-            else:
-                lr_data_norm = get_normed_data(lr_ds, data_type, norm_input, sqrt_transform_in, root, mask_gcm)
-                lr_tensors.append(lr_data_norm.unsqueeze(1))             
+        for data_type in data_types_lr:
+            # low-res   
+
+            lr_data_norm = get_normed_data(lr_ds, data_type, norm_input, sqrt_transform_in, root)
+            lr_tensors.append(lr_data_norm.unsqueeze(1))             
 
         lr_data_allvars = torch.concat(lr_tensors, dim = 1) # shape (n_timesteps, n_vars, spatial_dim), where spatial_dim = 20*36 or 20*36 + value_dim        
         months_np = np.float32(lr_ds.indexes['time'].strftime("%m")).astype("int")
@@ -302,13 +273,9 @@ class DownscalingDatasetTwoStepNormed(Dataset):
                     torch.sin(torch.tensor(365 / np.pi) * doy),
                     torch.cos(torch.tensor(365 / np.pi) * doy)
                 ], dim = 1)#.expand(lr_data_allvars.shape[0], lr_data_allvars.shape[1], 6)
-
-        
-        one_hot = one_hot.unsqueeze(0).expand(lr_data_allvars.shape[0], one_hot_dim)
         
         self.x_data = torch.cat([lr_data_allvars.reshape(lr_data_allvars.shape[0], -1),
-                   time_idx,
-                   one_hot],
+                   time_idx],
                     dim = -1)
         print("x data:", self.x_data.shape)
         
@@ -345,16 +312,18 @@ class DownscalingDatasetTwoStepNormed(Dataset):
 
 # ------------ GET DATA ---------------------------------------
 
-def get_data_2step_naive_avg(n_models=8, shuffle=True, batch_size=512, run_indices = None, 
-                            joint_one_hot=False, ignore_one_hot_gcm = False, ignore_one_hot_rcm = False,
-                            tr_te_split = "random", test_size=0.1,
-                            server="ada",
-                            variables = ["pr"], variables_lr = None, mode = "train",
-                            norm_input=None, norm_output=None, sqrt_transform_in=True, sqrt_transform_out=True,
-                            kernel_size=1, kernel_size_hr=1, mask_gcm=False, return_timepair=False,
-                            clip_quantile=None, logit=False, normal=False, include_year=False,
-                            only_winter=False, stride_lr=None, padding_lr=None,
-                            filter_outliers=False, precip_zeros="random",):
+def get_data_cordexbench(
+        domain="ALPS",
+        training_experiment = 'Emulator_hist_future',
+        shuffle=True, batch_size=512, run_indices = None, 
+        tr_te_split = "random", test_size=0.1,
+        server="ada",
+        variables = ["pr"], variables_lr = None, mode = "train",
+        norm_input=None, norm_output=None, sqrt_transform_in=True, sqrt_transform_out=True,
+        kernel_size=1, kernel_size_hr=1, return_timepair=False,
+        clip_quantile=None, logit=False, normal=False, include_year=False,
+        only_winter=False, stride_lr=None, padding_lr=None,
+        filter_outliers=False, precip_zeros="random",):
     """
     Get data loaders for two-step downscaling (GCM to coarse RCM to fine RCM).
     Wrapper around DownscalingDatasetTwoStepNormed.
@@ -364,9 +333,6 @@ def get_data_2step_naive_avg(n_models=8, shuffle=True, batch_size=512, run_indic
     - shuffle: whether to shuffle the training data in the dataloader
     - batch_size: batch size for the dataloader
     - run_indices: list of indices of (GCM, RCM) combinations to use; if None, the first n_models combinations are used
-    - joint_one_hot: if True, use a joint one-hot encoding for each (GCM, RCM) pair; if False, use separate one-hot encodings for GCM and RCM
-    - ignore_one_hot_gcm: if True, ignore the one-hot encoding for GCM (set to zero); only used if joint_one_hot is False
-    - ignore_one_hot_rcm: if True, ignore the one-hot encoding for RCM (set to zero); only used if joint_one_hot is False
     - tr_te_split: method to split training and testing data; only "random" is currently included
     - test_size: fraction of data to use as test set
     - server: "ada" or "euler"; determines the root path for data loading
@@ -380,69 +346,37 @@ def get_data_2step_naive_avg(n_models=8, shuffle=True, batch_size=512, run_indic
         root = "/r/scratch/groups/nm/downscaling/cordex-ALPS-allyear"
     elif server == "euler":
         root = "/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear"
-    if run_indices is None:
-        run_indices = list(range(n_models))
+
     random_state = 42
     
     if mode != "train":
         test_size = 0.0
-    
-    gcm_list, rcm_list, gcm_dict, rcm_dict = get_rcm_gcm_combinations(root)
-    one_hot_dim1 = 7
-    one_hot_dim2 = 8
-    
-    if ignore_one_hot_gcm:
-        assert not joint_one_hot
         
-    if not joint_one_hot:
-        gcm_indices = torch.tensor([gcm_dict[gcm] for gcm in gcm_list])
-        one_hot_gcm = torch.nn.functional.one_hot(gcm_indices)
-        if ignore_one_hot_gcm or tr_te_split == "gcm" or tr_te_split == "rcm_gcm":
-            one_hot_gcm = torch.zeros_like(one_hot_gcm)
-        rcm_indices = torch.tensor([rcm_dict[rcm] for rcm in rcm_list])
-        one_hot_rcm = torch.nn.functional.one_hot(rcm_indices)
-        if ignore_one_hot_rcm or tr_te_split == "rcm":
-            one_hot_rcm = torch.zeros_like(one_hot_rcm)
-    else:
-        one_hot_run = torch.nn.functional.one_hot(torch.tensor(run_indices))
-    
-    if variables_lr is not None:
-        assert sqrt_transform_in == sqrt_transform_out
-        if not joint_one_hot:
-            one_hot = torch.cat([one_hot_gcm, one_hot_rcm], dim = 1)
-            one_hot_dim = one_hot_dim1
-        else:
-            one_hot = one_hot_run
-            one_hot_dim = one_hot_dim2
             
-        datasets_train = [DownscalingDatasetTwoStepNormed(root = root,
-                                                data_types=variables, 
-                                                data_types_lr = variables_lr,
-                                                gcm = gcm_list[i], rcm = rcm_list[i], 
-                                                one_hot = one_hot[i],
-                                                mode=mode,
-                                                norm_input=norm_input,
-                                                norm_output=norm_output,
-                                                sqrt_transform_in=sqrt_transform_in,
-                                                sqrt_transform_out=sqrt_transform_out,
-                                                kernel_size=kernel_size,
-                                                kernel_size_hr=kernel_size_hr,
-                                                mask_gcm=mask_gcm,
-                                                one_hot_dim=one_hot_dim,
-                                                return_timepair=return_timepair,
-                                                clip_quantile=clip_quantile,
-                                                logit=logit,
-                                                normal=normal,
-                                                include_year=include_year,
-                                                only_winter=only_winter,
-                                                stride_lr=stride_lr,
-                                                padding_lr=padding_lr,
-                                                filter_outliers=filter_outliers,
-                                                precip_zeros=precip_zeros)                                            
-                        for i in run_indices]
+    datasets_train = [DownscalingDatasetTwoStepNormed(root = root,
+                                            domain=domain,
+                                            training_experiment = training_experiment,
+                                            data_types=variables, 
+                                            data_types_lr = variables_lr,
+                                            mode=mode,
+                                            norm_input=norm_input,
+                                            norm_output=norm_output,
+                                            sqrt_transform_in=sqrt_transform_in,
+                                            sqrt_transform_out=sqrt_transform_out,
+                                            kernel_size=kernel_size,
+                                            kernel_size_hr=kernel_size_hr,
+                                            return_timepair=return_timepair,
+                                            clip_quantile=clip_quantile,
+                                            logit=logit,
+                                            normal=normal,
+                                            include_year=include_year,
+                                            only_winter=only_winter,
+                                            stride_lr=stride_lr,
+                                            padding_lr=padding_lr,
+                                            filter_outliers=filter_outliers,
+                                            precip_zeros=precip_zeros)                                            
+                    for i in run_indices]
         
-    else: 
-        raise NotImplementedError("Please provide variables_lr")
     
     if tr_te_split == "random":
         # REMOVED all RCMs except ALADIN
