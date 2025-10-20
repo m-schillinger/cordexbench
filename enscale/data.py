@@ -15,11 +15,11 @@ import scipy
 
 # -------------- DATASET CLASS ---------------------------------------
 
-def get_normed_data(lr_ds, data_type, norm_input, sqrt_transform_in, root):
+def get_normed_data(lr_ds, data_type, norm_input, sqrt_transform_in, root, domain="ALPS"):
     lr_data = torch.flip(torch.from_numpy(lr_ds[data_type].data), [1])
     # data = torch.from_numpy(lr_ds[data_type].data)
     # bring lr_data to the right units
-    lr_data_norm = normalise(lr_data, mode = "lr", data_type = data_type, sqrt_transform = sqrt_transform_in, norm_method = norm_input, root=root)
+    lr_data_norm = normalise(lr_data, mode = "lr", data_type = data_type, sqrt_transform = sqrt_transform_in, norm_method = norm_input, root=root + domain)
         
     return lr_data_norm
 
@@ -94,7 +94,7 @@ class DownscalingDatasetTwoStepNormed(Dataset):
         """
         self.return_timepair = return_timepair
         # {domain}_domain
-        DATA_PATH = root + f"/{domain}/{domain}_domain"
+        DATA_PATH = root + f"{domain}/{domain}_domain"
         if mode == "train":
             folder = "train"
         else:
@@ -181,6 +181,7 @@ class DownscalingDatasetTwoStepNormed(Dataset):
             hr_path = f'{DATA_PATH}/{folder}/{training_experiment}/target/pr_tasmax_{gcm_name}_{period_training}.nc'
             # hr_path = os.path.join (root, folder, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + ".nc")
             # flipping the data to have correct north-south orientation
+            print(hr_path)
             hr_ds = xr.open_dataset(hr_path)
             
             for data_type in data_types:
@@ -192,7 +193,7 @@ class DownscalingDatasetTwoStepNormed(Dataset):
                     # changed to batchwise clipping to shorten preprocessing time
                     hr_data = batchwise_quantile_clipping(hr_data, q = clip_quantile, batch_size = 365)
                     
-                hr_data_norm = normalise(hr_data, mode = "hr", data_type = data_type, sqrt_transform = sqrt_transform_out, norm_method = norm_output, root=root,
+                hr_data_norm = normalise(hr_data, mode = "hr", data_type = data_type, sqrt_transform = sqrt_transform_out, norm_method = norm_output, root=root + domain,
                                         logit=logit, normal=normal)
                 # if numpy array, convert to torch tensor again
                 if isinstance(hr_data_norm, np.ndarray):
@@ -228,17 +229,15 @@ class DownscalingDatasetTwoStepNormed(Dataset):
         if len(lr_ds.time) != len(hr_ds.time):
             print("Length mismatch. Should investigate further!")
         
-        if data_types_lr is None:
+        if data_types_lr is None or data_types_lr == ["all"]:
             # get all available variables except time and lat/lon
             data_types_lr = list(lr_ds.data_vars)
-            data_types_lr.remove('time')
-            data_types_lr.remove('lat')
-            data_types_lr.remove('lon')    
+            
             
         for data_type in data_types_lr:
             # low-res   
 
-            lr_data_norm = get_normed_data(lr_ds, data_type, norm_input, sqrt_transform_in, root)
+            lr_data_norm = get_normed_data(lr_ds, data_type, norm_input, sqrt_transform_in, root, domain=domain)
             lr_tensors.append(lr_data_norm.unsqueeze(1))             
 
         lr_data_allvars = torch.concat(lr_tensors, dim = 1) # shape (n_timesteps, n_vars, spatial_dim), where spatial_dim = 20*36 or 20*36 + value_dim        
@@ -315,7 +314,7 @@ class DownscalingDatasetTwoStepNormed(Dataset):
 def get_data_cordexbench(
         domain="ALPS",
         training_experiment = 'Emulator_hist_future',
-        shuffle=True, batch_size=512, run_indices = None, 
+        shuffle=True, batch_size=512,
         tr_te_split = "random", test_size=0.1,
         server="ada",
         variables = ["pr"], variables_lr = None, mode = "train",
@@ -329,10 +328,8 @@ def get_data_cordexbench(
     Wrapper around DownscalingDatasetTwoStepNormed.
     
     Parameters:
-    - n_models: number of (GCM, RCM) combinations available; not used if run_indices is provided
     - shuffle: whether to shuffle the training data in the dataloader
     - batch_size: batch size for the dataloader
-    - run_indices: list of indices of (GCM, RCM) combinations to use; if None, the first n_models combinations are used
     - tr_te_split: method to split training and testing data; only "random" is currently included
     - test_size: fraction of data to use as test set
     - server: "ada" or "euler"; determines the root path for data loading
@@ -343,9 +340,9 @@ def get_data_cordexbench(
       filter_outliers, precip_zeros: parameters passed to DownscalingDatasetTwoStepNormed
     """
     if server == "ada":
-        root = "/r/scratch/groups/nm/downscaling/cordex-ALPS-allyear"
+        root="/r/scratch/users/mschillinger/data/cordexbench/"
     elif server == "euler":
-        root = "/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear"
+        raise NotImplementedError("Data not on Euler yet.")
 
     random_state = 42
     
@@ -353,7 +350,7 @@ def get_data_cordexbench(
         test_size = 0.0
         
             
-    datasets_train = [DownscalingDatasetTwoStepNormed(root = root,
+    full_dataset = DownscalingDatasetTwoStepNormed(root = root,
                                             domain=domain,
                                             training_experiment = training_experiment,
                                             data_types=variables, 
@@ -375,13 +372,10 @@ def get_data_cordexbench(
                                             padding_lr=padding_lr,
                                             filter_outliers=filter_outliers,
                                             precip_zeros=precip_zeros)                                            
-                    for i in run_indices]
         
     
     if tr_te_split == "random":
         # REMOVED all RCMs except ALADIN
-        # full_dataset = ConcatDataset([datasets_train[i] for i in run_indices if rcm_list[i] == "ALADIN63"])
-        full_dataset = ConcatDataset(datasets_train)
         
         if test_size > 0:
             train_indices, test_indices = train_test_split(list(range(len(full_dataset))), test_size = test_size, random_state = random_state)

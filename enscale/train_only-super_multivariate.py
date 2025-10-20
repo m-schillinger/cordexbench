@@ -4,13 +4,12 @@ import random
 import matplotlib.pyplot as plt
 from torchvision.utils import make_grid
 from modules import StoUNet, RankValModel, LinearModel, GCMCoarseRCMModel, MLPConvWrapper
-from modules_cnn import Generator16x, Generator4x, Generator4xConcat, Generator2x
 from modules_loc_variant import RectUpsampleWithResiduals, RectUpsampler
 from loss_func import energy_loss_two_sample, avg_constraint_per_var, energy_loss_multivariate_summed, norm_loss_multivariate_summed
 import torch.nn.functional as F
 import torch.linalg as LA
 
-from data import get_data, get_data_2step, get_data_2step_naive_avg
+from data import get_data_cordexbench
 from config import get_config
 from utils import *
 import sys
@@ -323,24 +322,23 @@ if __name__ == '__main__':
     gcm_list, rcm_list, gcm_dict, rcm_dict = get_rcm_gcm_combinations(root)
     
     #### load data
-    train_loader, test_loader_in = get_data_2step_naive_avg(n_models=args.n_models, 
-                                                            run_indices=args.run_indices,
-                                                            variables=args.variables, 
-                                                            variables_lr=args.variables_lr,
-                                            batch_size=args.batch_size,
-                                            norm_input=args.norm_method_input, norm_output=args.norm_method_output,
-                                            sqrt_transform_in=args.sqrt_transform_in, sqrt_transform_out=args.sqrt_transform_out,
-                                            kernel_size=args.kernel_size_lr, 
-                                            kernel_size_hr=args.kernel_size_hr,
-                                            clip_quantile=args.clip_quantile_data,
-                                            tr_te_split=args.tr_te_split, 
-                                            logit=args.logit_transform,
-                                            normal=args.normal_transform,
-                                            server=args.server,
-                                            stride_lr=args.stride_lr,
-                                            padding_lr=args.padding_lr,
-                                            filter_outliers=args.filter_outliers,
-                                            precip_zeros=args.precip_zeros)
+    train_loader, test_loader_in = get_data_cordexbench(
+        domain=args.domain,
+        training_experiment=args.training_experiment,
+        shuffle=True, batch_size=512,
+        tr_te_split = "random", test_size=1-args.tr_te_split_ratio,
+        server=args.server,
+        variables=args.variables, variables_lr=args.variables_lr,
+        mode = "train",
+        norm_input=args.norm_method_input, norm_output=args.norm_method_output,
+        sqrt_transform_in=args.sqrt_transform_in, sqrt_transform_out=args.sqrt_transform_out,
+        kernel_size=args.kernel_size_lr, kernel_size_hr=args.kernel_size_hr, return_timepair=False,
+        clip_quantile=None, 
+        logit=args.logit_transform,
+        normal=args.normal_transform,
+        include_year=False,
+        only_winter=False, stride_lr=None, padding_lr=None,
+        filter_outliers=False, precip_zeros="random",)
     print('#training batches:', len(train_loader))
     
     x_tr_eval, xc_tr_eval, y_tr_eval = next(iter(train_loader))
@@ -374,7 +372,27 @@ if __name__ == '__main__':
             name_str = ""
         if args.kernel_size_hr == 1:
             if args.norm_method_output == "normalise_pw":
-                ns_path = os.path.join(args.data_dir, "norm_stats", f"{mode_unnorm}_norm_stats_pixelwise_" + args.variables[i] + "_train_ALL" + name_str + ".pt")
+                #ns_path = os.path.join(args.data_dir, "norm_stats", f"{mode_unnorm}_norm_stats_pixelwise_" + args.variables[i] + "_train_ALL" + name_str + ".pt")
+                #norm_stats[args.variables[i]] = torch.load(ns_path, map_location=device)
+                data_type = args.variables[i]
+                
+                if args.training_experiment == 'ESD_pseudo_reality':
+                    period_training = '1961-1980'
+                elif args.training_experiment == 'Emulator_hist_future':
+                    period_training = '1961-1980_2080-2099'
+                else:
+                    raise ValueError('Provide a valid date')
+
+                # Set the GCM
+                if args.domain == 'ALPS':
+                    gcm_name = 'CNRM-CM5'
+                elif args.domain == 'NZ':
+                    gcm_name = 'ACCESS-CM2'
+                file_base = f"{args.training_experiment}_{data_type}_{gcm_name}_{period_training}{name_str}"
+
+                # torch.save({"mean": hr_mean_all, "std": hr_std_all},
+                #    os.path.join(root, domain, "norm_stats", f"hr_norm_stats_full-data_{file_base}.pt"))
+                ns_path = os.path.join(args.data_dir, "norm_stats", f"{mode_unnorm}_norm_stats_pixelwise_{file_base}.pt")
                 norm_stats[args.variables[i]] = torch.load(ns_path, map_location=device)
             elif args.norm_method_output == "normalise_scalar":
                 ns_path = os.path.join(args.data_dir, "norm_stats", f"{mode_unnorm}_norm_stats_full-data_" + args.variables[i] + "_train_ALL" + name_str + ".pt")

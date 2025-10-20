@@ -24,7 +24,7 @@ def download_and_extract(domain, DATA_PATH=None):
     os.remove(zip_path)
 
 if __name__ == "__main__":
-    domain = "ALPS"
+    domain = "NZ"
     DATA_PATH = f'/r/scratch/users/mschillinger/data/cordexbench/{domain}'
     os.makedirs(DATA_PATH, exist_ok=True)
 

@@ -1,12 +1,12 @@
+from data import get_data_cordexbench
 import torch
 import os
 import random
 import matplotlib.pyplot as plt
 from torchvision.utils import make_grid
-from modules import StoUNet, StoEncNet, RankValModel, LinearModel, GCMCoarseRCMModel, MultipleStoUNetWrapper, MeanResidualWrapper
-from loss_func import energy_loss_two_sample, energy_loss_rk_val_wrapper, ridge_loss, energy_loss_2step, energy_loss_coarse_wrapper, avg_constraint, norm_loss, norm_loss_multivariate_summed
+from modules import StoUNet, StoEncNet, LinearModel, MultipleStoUNetWrapper, MeanResidualWrapper
+from loss_func import energy_loss_two_sample, norm_loss_multivariate_summed
 
-from data import get_data, get_data_2step, get_data_2step_naive_avg
 from config import get_config
 from utils import *
 import sys
@@ -71,7 +71,9 @@ def visual_sample(model, x, y, save_dir, norm_method=None, norm_stats=None,sqrt_
             sample = torch.cat([y_var.cpu(), gen_var.cpu(), gen_var2.cpu()])
         
         sample = torch.clamp(sample, torch.quantile(y_var, 0.0005).item(), torch.quantile(y_var, 0.9995).item())
-        plt.matshow(make_grid(sample, nrow=y.shape[0]).permute(1, 2, 0)[:,:,0], cmap="rainbow"); plt.axis('off'); 
+        vmin_sample = sample.min().item()
+        vmax_sample = sample.max().item()
+        plt.matshow(make_grid(sample, nrow=y.shape[0]).permute(1, 2, 0)[:,:,0], cmap="rainbow", vmin=vmin_sample, vmax=vmax_sample); plt.axis('off'); 
         plt.savefig(save_dir + f"_var-{args.variables[i]}.png", bbox_inches="tight", pad_inches=0, dpi=300); plt.close()
         # save_image(sample, save_dir, normalize=True, scale_each=True)
 
@@ -195,7 +197,7 @@ if __name__ == '__main__':
     if args.server == "euler":
         prefix = "/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear/eng-results/"
     elif args.server == "ada":
-        prefix = "results/eng_2step/"
+        prefix = f"results/{args.domain}/"
     
     variables_str = '_'.join(args.variables)
     
@@ -205,11 +207,11 @@ if __name__ == '__main__':
             # save_dir = prefix + f"coarse/var-{variables_str}/hd-{args.hidden_dim}_num-lay-{args.num_layer}_sqrt-{args.sqrt_transform_out}_out-act-{args.out_act}{args.save_name}/"
             save_dir = prefix + f"coarse/var-{variables_str}/hd-{args.hidden_dim}_num-lay-{args.num_layer}_norm-out-{args.norm_method_output}{args.save_name}/"
         else:
-            save_dir = prefix + f"coarse/kernel-{args.kernel_size_lr}/var-{variables_str}/hd-{args.hidden_dim}_num-lay-{args.num_layer}_sqrt-{args.sqrt_transform_out}_out-act-{args.out_act}{args.save_name}/"
+            save_dir = prefix + f"coarse/kernel-{args.kernel_size_lr}/var-{variables_str}/hd-{args.hidden_dim}_num-lay-{args.num_layer}_norm-out-{args.norm_method_output}{args.save_name}/"
     elif args.method == 'nn_det' or args.method == "residual" or args.method == "residual_from_mean":
-        save_dir = prefix + f"coarse/{args.method}/var-{variables_str}/hd-{args.hidden_dim}_num-lay-{args.num_layer}_sqrt-{args.sqrt_transform_out}_out-act-{args.out_act}_lay-shr{args.layer_shrinkage}{args.save_name}/"
+        save_dir = prefix + f"coarse/var-{variables_str}/{args.method}/hd-{args.hidden_dim}_num-lay-{args.num_layer}_norm-out-{args.norm_method_output}{args.save_name}/"
     elif args.method == 'linear':
-        save_dir = prefix + f"coarse/var-{variables_str}/{args.method}/sqrt-{args.sqrt_transform_out}_models-{''.join(map(str, args.run_indices))}{args.save_name}/"
+        save_dir = prefix + f"coarse/var-{variables_str}/{args.method}/norm-out-{args.norm_method_output}{args.save_name}/"
     elif args.method == 'eng_temporal':
         save_dir = prefix + f"coarse_temporal/var-{variables_str}/hd-{args.hidden_dim}_num-lay-{args.num_layer}_norm-out-{args.norm_method_output}{args.save_name}/"
     make_folder(save_dir)
@@ -245,26 +247,24 @@ if __name__ == '__main__':
         return_timepair = True
     else:
         return_timepair = False
-    train_loader, test_loader_in = get_data_2step_naive_avg(
-                                            run_indices=args.run_indices,
-                                            n_models=args.n_models, 
-                                            variables=args.variables, variables_lr=args.variables_lr,
-                                            batch_size=args.batch_size,
-                                            norm_input=args.norm_method_input, norm_output=args.norm_method_output,
-                                            sqrt_transform_in=args.sqrt_transform_in, sqrt_transform_out=args.sqrt_transform_out,
-                                            kernel_size=args.kernel_size_lr, mask_gcm=args.mask_gcm,
-                                            joint_one_hot=args.split_coarse_model,
-                                            ignore_one_hot_gcm=args.ignore_one_hot_gcm,
-                                            ignore_one_hot_rcm=args.ignore_one_hot_rcm,
-                                            tr_te_split=args.tr_te_split, 
-                                            test_size=1-args.tr_te_split_ratio,
-                                            logit=args.logit_transform,
-                                            normal=args.normal_transform,
-                                            old_data=args.old_data,
-                                            only_winter=args.only_winter,
-                                            server=args.server,
-                                            return_timepair=return_timepair,
-                                            precip_zeros=args.precip_zeros)
+    train_loader, test_loader_in = get_data_cordexbench(
+        domain=args.domain,
+        training_experiment=args.training_experiment,
+        shuffle=True, batch_size=512,
+        tr_te_split = "random", test_size=1-args.tr_te_split_ratio,
+        server=args.server,
+        variables=args.variables, variables_lr=args.variables_lr,
+        mode = "train",
+        norm_input=args.norm_method_input, norm_output=args.norm_method_output,
+        sqrt_transform_in=args.sqrt_transform_in, sqrt_transform_out=args.sqrt_transform_out,
+        kernel_size=args.kernel_size_lr, kernel_size_hr=args.kernel_size_hr, return_timepair=False,
+        clip_quantile=None, 
+        logit=args.logit_transform,
+        normal=args.normal_transform,
+        include_year=False,
+        only_winter=False, stride_lr=None, padding_lr=None,
+        filter_outliers=False, precip_zeros="random",)
+
     print('#training batches:', len(train_loader))
     
     if args.method == "eng_temporal":
@@ -312,6 +312,24 @@ if __name__ == '__main__':
         x_tr_eval, xc_tr_eval, y_tr_eval = x_tr_eval[:args.n_visual].to(device), xc_tr_eval[:args.n_visual].to(device), y_tr_eval[:args.n_visual].to(device)
         x_te_eval, xc_te_eval, y_te_eval = next(iter(test_loader_in))
         x_te_eval, xc_te_eval, y_te_eval = x_te_eval[:args.n_visual].to(device), xc_te_eval[:args.n_visual].to(device), y_te_eval[:args.n_visual].to(device)
+        
+        fig, axs = plt.subplots(1, 8, figsize=(15, 6))
+
+        # Determine the min and max values for the color scale
+        vmin = xc_tr_eval.min().item()
+        vmax = xc_tr_eval.max().item()
+        print("min value xc_tr_eval:", vmin)
+        print("max value xc_tr_eval:", vmax)
+
+        for i in range(8):
+            # First row: xc_tr_eval
+            axs[i].imshow(xc_tr_eval[i, 0, :].view(8, 8).cpu().numpy(), cmap="Spectral_r", vmin=vmin, vmax=vmax)
+            axs[i].set_title(f'xc_tr_eval[{i}]')
+            axs[i].axis('off')
+
+        plt.tight_layout()
+        plt.savefig(save_dir + "test_eval_samples.png", bbox_inches="tight", pad_inches=0, dpi=300)
+
     
     if args.kernel_size_lr == 16:
         mode_unnorm = "hr_avg"
@@ -328,30 +346,14 @@ if __name__ == '__main__':
         args.data_dir = "/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear"
         
     #### get norm stats file        
-    norm_stats = {}
-    for i in range(len(args.variables)):
-        if args.variables[i] in ["pr", "sfcWind"] and args.sqrt_transform_out:
-            name_str = "_sqrt"
-        else:
-            name_str = ""
-        #if args.norm_method_output == "normalise_pw":
-        #    ns_path = os.path.join(args.data_dir, "norm_stats", f"{mode_unnorm}_norm_stats_pixelwise_" + args.variables[i] + "_train_ALL" + name_str + ".pt")
-        #    norm_stats[args.variables[i]] = torch.load(ns_path, map_location=device)
-        if args.norm_method_output == "normalise_pw":
-            norm_stats[args.variables[i]] = None
-        elif args.norm_method_output == "normalise_scalar":
-            ns_path = os.path.join(args.data_dir, "norm_stats", f"hr_norm_stats_full-data_" + args.variables[i] + "_train_ALL" + name_str + ".pt")
-            norm_stats[args.variables[i]] = torch.load(ns_path, map_location=device)
-        # TO DO: add norm stats for uniform_per_model, or maybe update this path
-        
-        elif args.norm_method_output == "uniform" and mode_unnorm == "hr_avg": #"hr_norm_stats_ecdf_matrix_" + data_type + "_train_" + "ALL" + name_str + ".pt")
-            name_str = ""
-            ns_path = os.path.join(args.data_dir, "norm_stats", f"{mode_unnorm}8x8_norm_stats_ecdf_matrix_" + args.variables[i] + "_train_SUBSAMPLE" + name_str + ".pt")
-            norm_stats[args.variables[i]] = torch.load(ns_path, map_location=device)
-        else:
-            norm_stats[args.variables[i]] = None
-        
-
+    norm_stats = None
+    
+    if args.variables_lr == ["all"]:
+        input_dims_for_preproc = np.array([256 for k in range(15)] +
+                 [5])
+    else:
+        input_dims_for_preproc = np.array([256 for k in range(len(args.variables_lr))] +
+                 [5])
     #### build model
     if args.method == 'eng_2step' or args.method == 'eng_temporal':
         if args.variables_lr is not None:
@@ -391,18 +393,14 @@ if __name__ == '__main__':
                 model = StoUNet(in_dim, interm_dim, args.num_layer, args.hidden_dim, args.noise_dim,
                                         add_bn=args.bn, out_act=args.out_act, resblock=args.mlp, noise_std=args.noise_std,
                                         preproc_layer=args.preproc_layer,
-                                        input_dims_for_preproc=np.array(
-                                            [720  for k in range(n_vars)] +
-                                            [5, 7] +
-                                            [interm_dim_per_var for k in range(len(args.variables))]),
+                                        input_dims_for_preproc=input_dims_for_preproc +\
+                                            [interm_dim_per_var for k in range(len(args.variables))],
                                         preproc_dim=args.preproc_dim, layer_shrinkage=args.layer_shrinkage).to(device)
             else:
                 model = StoUNet(in_dim, interm_dim, args.num_layer, args.hidden_dim, args.noise_dim,
                         add_bn=args.bn, out_act=args.out_act, resblock=args.mlp, noise_std=args.noise_std,
                         preproc_layer=args.preproc_layer,
-                        input_dims_for_preproc=np.array(
-                            [720  for k in range(n_vars)] +
-                            [5, 7]),
+                        input_dims_for_preproc=input_dims_for_preproc,
                         preproc_dim=args.preproc_dim, layer_shrinkage=args.layer_shrinkage).to(device)
             
             # BEFORE
@@ -461,22 +459,19 @@ if __name__ == '__main__':
             print(f'Built a model with #params: {count_parameters(model)}')            
     
         else:
-            if args.kernel_size_lr == 16 or args.kernel_size_lr == 32 or args.kernel_size_lr == 64:
+            #if args.kernel_size_lr == 16 or args.kernel_size_lr == 32 or args.kernel_size_lr == 64:
                 # old version
                 # model = StoEncNet(in_dim, interm_dim, args.num_layer, args.hidden_dim, 0,
                 #                add_bn=args.bn, out_act=args.out_act, resblock=args.mlp, noise_std=args.noise_std,
                 #                preproc_layer=args.preproc_layer, n_vars=n_vars, time_dim=5, val_dim=val_dim, 
                 #                rank_dim=720, preproc_dim=args.preproc_dim, layer_growth=args.layer_shrinkage).to(device)
-                model = StoUNet(in_dim, interm_dim, args.num_layer, args.hidden_dim, 0,
+            print("Building StoUNet with in_dim {}, out_dim {}, layer shrinkage {}".format(in_dim, interm_dim, args.layer_shrinkage))
+            model = StoUNet(in_dim, interm_dim, args.num_layer, args.hidden_dim, 0,
                                  add_bn=args.bn, out_act=args.out_act, resblock=args.mlp, noise_std=args.noise_std,
-                                 preproc_layer=args.preproc_layer, n_vars=n_vars, time_dim=5, val_dim=val_dim, 
-                                rank_dim=720, preproc_dim=args.preproc_dim, layer_shrinkage=args.layer_shrinkage).to(device)
-            elif args.kernel_size_lr == 4 or args.kernel_size_lr == 8  or args.kernel_size_lr == 2:
-                model = StoUNet(in_dim, interm_dim, args.num_layer, args.hidden_dim, 0,
-                                add_bn=args.bn, out_act=args.out_act, resblock=args.mlp, noise_std=args.noise_std,
-                                preproc_layer=args.preproc_layer, n_vars=n_vars, time_dim=5, val_dim=val_dim, 
-                                rank_dim=720, preproc_dim=args.preproc_dim, layer_shrinkage=args.layer_shrinkage).to(device)
-        
+                                 preproc_layer=args.preproc_layer,
+                                 input_dims_for_preproc=input_dims_for_preproc,
+                                preproc_dim=args.preproc_dim, layer_shrinkage=args.layer_shrinkage).to(device)
+            
         #    def __init__(self, in_dim, out_dim, num_layer=2, hidden_dim=100, 
         #          noise_dim=100, add_bn=True, out_act=None, resblock=False, noise_std=1,
         #          preproc_layer=False, n_vars=5, time_dim=6, val_dim=None, rank_dim=720, preproc_dim=20):
@@ -526,7 +521,7 @@ if __name__ == '__main__':
     elif args.method == 'linear':
         in_dim = x_tr_eval.shape[1]
         out_dim = y_tr_eval.shape[-1]
-        interm_dim = xc_tr_eval.shape[-1]
+        interm_dim = xc_tr_eval.shape[-1]  * len(args.variables)
         model = LinearModel(in_dim, interm_dim).to(device)
 
         optimizer_coarse = torch.optim.Adam(model.parameters(), lr=args.lr)

@@ -1,0 +1,23 @@
+python -u train_only-super_multivariate.py \
+            --out_act None \
+            --save_name '_dec1e-3_lam-mse0_split-resid-False' \
+            --lambda_mse_loss 0 \
+            --not_split_residuals \
+            --weight_decay 1e-3 \
+            --nicolai_layers \
+            --num_neighbors_res 25 \
+            --mlp_depth 2 \
+            --noise_dim_mlp 0 \
+            --hidden_dim 12 \
+            --latent_dim 12 \
+            --method eng_2step \
+            --variables tasmax \
+            --num_epochs 500 \
+            --norm_method_input None \
+            --norm_method_output normalise_pw \
+            --kernel_size_hr 2 \
+            --kernel_size_lr 4 \
+            --sample_every_nepoch 50 \
+            --save_model_every 50 \
+            --variables_lr all \
+            --batch_size 64

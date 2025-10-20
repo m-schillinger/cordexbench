@@ -21,6 +21,11 @@ def get_config():
     parser.add_argument('--conv_dim', type=int, default=16, help="hyperparameter for the convolutional layers")
     
     # data loading
+    
+    # parameters specific to cordexbench
+    parser.add_argument('--domain', type=str, required=False, default = "ALPS")
+    parser.add_argument('--training_experiment', type=str, required=False, default = 'Emulator_hist_future')
+    
     parser.add_argument('--variables', type=str, required=False, default = ["pr"], nargs='+')
     parser.add_argument('--variables_lr', type=str, required=False, default = None, nargs='+')
     parser.add_argument('--n_models', type=int, default=1)

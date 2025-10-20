@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import pdb
-from modules_cnn import Generator4x, Generator4xExternalNoise
 from utils import make_dataloader, add_one_hot
 import numpy as np
 

@@ -21,9 +21,7 @@ echo "Submitting job: wd=$wd lambda=$lambda precip=$precip split=$splitresid"
 python -u train_only-super_multivariate.py \
             --n_models 8 \
             --out_act None \
-            --save_name '_normal-transform_dec${wd}_lam-mse${lambda}_split-resid${splitresid}_zeros${precip}_onehot-simple' \
-            --one_hot_in_super \
-            --one_hot_only_in_ups \
+            --save_name '_dec${wd}_lam-mse${lambda}_split-resid${splitresid}' \
             --lambda_mse_loss ${lambda} \
             $split_flag \
             $mse_flag \
@@ -36,24 +34,21 @@ python -u train_only-super_multivariate.py \
             --hidden_dim 12 \
             --latent_dim 12 \
             --method eng_2step \
-            --variables tas pr sfcWind rsds \
+            --variables tasmax \
             --num_epochs 500 \
             --norm_method_input normalise_scalar \
-            --norm_method_output uniform \
-            --normal_transform \
+            --norm_method_output normalise_pw \
             --kernel_size_hr 8 \
             --kernel_size_lr 16 \
             --sample_every_nepoch 50 \
             --save_model_every 50 \
-            --variables_lr pr \
+            --variables_lr all \
             --batch_size 512
     
 python -u train_only-super_multivariate.py \
             --n_models 8 \
             --out_act None \
-            --save_name '_normal-transform_dec${wd}_lam-mse${lambda}_split-resid${splitresid}_zeros${precip}_onehot-simple' \
-            --one_hot_in_super \
-            --one_hot_only_in_ups \
+            --save_name '_dec${wd}_lam-mse${lambda}_split-resid${splitresid}' \
             --lambda_mse_loss ${lambda} \
             $split_flag \
             $mse_flag \
@@ -66,25 +61,22 @@ python -u train_only-super_multivariate.py \
             --hidden_dim 12 \
             --latent_dim 12 \
             --method eng_2step \
-            --variables tas pr sfcWind rsds \
+            --variables tasmax\
             --num_epochs 500 \
             --norm_method_input normalise_scalar \
-            --norm_method_output uniform \
-            --normal_transform \
+            --norm_method_output normalise_pw \
             --kernel_size_hr 4 \
             --kernel_size_lr 8 \
             --sample_every_nepoch 50 \
             --save_model_every 50 \
-            --variables_lr pr \
+            --variables_lr all \
             --batch_size 256 
 
 
 python -train_only-super_multivariate.py \
         --n_models 8 \
         --out_act None \
-        --save_name '_normal-transform_dec${wd}_lam-mse${lambda}_split-resid${splitresid}_zeros${precip}_onehot-simple' \
-        --one_hot_in_super \
-        --one_hot_only_in_ups \
+        --save_name '_dec${wd}_lam-mse${lambda}_split-resid${splitresid}' \
         --lambda_mse_loss ${lambda} \
         $split_flag \
         $mse_flag \
@@ -97,11 +89,10 @@ python -train_only-super_multivariate.py \
         --hidden_dim 12 \
         --latent_dim 12 \
         --method eng_2step \
-        --variables tas pr sfcWind rsds \
+        --variables tasmax \
         --num_epochs 500 \
         --norm_method_input normalise_scalar \
-        --norm_method_output uniform \
-        --normal_transform \
+        --norm_method_output normalise_pw \
         --kernel_size_hr 2 \
         --kernel_size_lr 4 \
         --sample_every_nepoch 50 \
@@ -113,9 +104,7 @@ python -train_only-super_multivariate.py \
 python train_only-super_multivariate.py \
     --n_models 8 \
     --out_act None \
-    --save_name '_normal-transform_dec${wd}_lam-mse${lambda}_split-resid${splitresid}_zeros${precip}_onehot-simple' \
-    --one_hot_in_super \
-    --one_hot_only_in_ups \
+    --save_name '_dec${wd}_lam-mse${lambda}_split-resid${splitresid}' \
     --lambda_mse_loss ${lambda} \
     $split_flag \
     $mse_flag \
@@ -128,11 +117,10 @@ python train_only-super_multivariate.py \
     --hidden_dim 12 \
     --latent_dim 12 \
     --method eng_2step \
-    --variables tas pr sfcWind rsds \
+    --variables tasmax \
     --num_epochs 500 \
     --norm_method_input normalise_scalar \
-    --norm_method_output uniform \
-    --normal_transform \
+    --norm_method_output normalise_pw \
     --kernel_size_hr 1 \
     --kernel_size_lr 2 \
     --sample_every_nepoch 50 \
