@@ -114,12 +114,12 @@ def get_model(args):
             norm_stats[args.variables[i]] = None
             
     in_dim = x_tr_eval.shape[1]
-    
+        
     if args.server == "euler":
         # prefix = "/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear/results/"
         pass
     elif args.server == "ada":
-        prefix = f"results/{args.domain}/"
+        prefix = f"results/{args.training_experiment}/{args.domain}/"
                    
     
     loaded_models = []
@@ -300,6 +300,7 @@ if __name__ == '__main__':
     parser.add_argument('--domain', type=str, default="ALPS", help='domain to use')
     parser.add_argument('--variable', type=str, default="tasmax", help='variable to use')
     parser.add_argument('--training_experiment', type=str, default="Emulator_hist_future")
+    parser.add_argument('--add_orography', action='store_true', help='Enable adding orography')
 
     args_parsed = parser.parse_args()
     args.temporal = args_parsed.temporal
@@ -318,6 +319,8 @@ if __name__ == '__main__':
     args.variable = args_parsed.variable
     args.variables = [args.variable]
     args.training_experiment = args_parsed.training_experiment
+    args.add_orography = args_parsed.add_orography
+    orog_folder = "with-orog" if args.add_orography else "no-orog"
 
     # TO DO: update
     if args.server == "ada":
@@ -395,7 +398,7 @@ if __name__ == '__main__':
     if args.server == "euler":
         save_dir_samples = "/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear/samples_multivariate/" + f"maybritt_{args.version}/"
     else:
-        save_dir_samples = "/r/scratch/groups/nm/downscaling/samples_multivariate/" + f"maybritt_{args.version}/"   
+        save_dir_samples = f"/r/scratch/groups/nm/downscaling/samples_multivariate/{args.training_experiment}/{args.domain}/{orog_folder}/" + f"maybritt_{args.version}/"   
     
     print("saving samples in ", save_dir_samples)
     os.makedirs(save_dir_samples, exist_ok=True)

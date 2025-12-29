@@ -262,25 +262,27 @@ if __name__ == '__main__':
         subfolder = "coarse"
     else:
         subfolder = f"lr{args.kernel_size_lr}_hr{args.kernel_size_hr}"
+        
+    orog_folder = "with-orog" if args.add_orography else "no-orog"
     if not args.conv and not args.conv_concat and not args.nicolai_layers:
         if args.server == "ada":
-            save_dir = f"results/{args.domain}/super/{subfolder}/var-{variables_str}/hidden{args.hidden_dim}_num-l-{args.num_layer}_layer-shr-{args.layer_shrinkage}_avc-c-{args.avg_constraint}_norm-out-{args.norm_method_output}{args.save_name}/"
+            save_dir = f"results/{args.training_experiment}/{args.domain}/{orog_folder}/super/{subfolder}/var-{variables_str}/hidden{args.hidden_dim}_num-l-{args.num_layer}_layer-shr-{args.layer_shrinkage}_avc-c-{args.avg_constraint}_norm-out-{args.norm_method_output}{args.save_name}/"
         elif args.server == "euler":
             save_dir = f"/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear/eng-results/super/{subfolder}/var-{args.variables[0]}/hidden{args.hidden_dim}_num-l-{args.num_layer}_layer-shr-{args.layer_shrinkage}_avc-c-{args.avg_constraint}_norm-out-{args.norm_method_output}{args.save_name}/"
     elif args.nicolai_layers:
         if args.server == "ada":
             #num_neighbors_ups=9,                          num_neighbours_res=25,                             map_dim=12,                             noise_dim=5,                             mlp_hidden=100,                             mlp_depth=3,                           noise_dim_mlp=0
-            save_dir = f"results/{args.domain}/super/{subfolder}/var-{variables_str}/loc-specific-layers_norm-out-{args.norm_method_output}{args.save_name}/"
+            save_dir = f"results/{args.training_experiment}/{args.domain}/{orog_folder}/super/{subfolder}/var-{variables_str}/loc-specific-layers_norm-out-{args.norm_method_output}{args.save_name}/"
         elif args.server == "euler":
             save_dir = f"/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear/eng-results/super/{subfolder}/var-{variables_str}/loc-specific-layers_norm-out-{args.norm_method_output}_{args.save_name}/"
     elif args.conv:
         if args.server == "ada":
-            save_dir = f"results/{args.domain}/super/{subfolder}/var-{variables_str}/conv-{args.conv}-dim{args.conv_dim}_avc-c-{args.avg_constraint}_norm-out-{args.norm_method_output}{args.save_name}/"
+            save_dir = f"results/{args.training_experiment}/{args.domain}/{orog_folder}/super/{subfolder}/var-{variables_str}/conv-{args.conv}-dim{args.conv_dim}_avc-c-{args.avg_constraint}_norm-out-{args.norm_method_output}{args.save_name}/"
         elif args.server == "euler":
             save_dir = f"/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear/eng-results/super/{subfolder}/var-{variables_str}/conv-{args.conv}-dim{args.conv_dim}_avc-c-{args.avg_constraint}_norm-out-{args.norm_method_output}{args.save_name}/"
     elif args.conv_concat:
         if args.server == "ada":
-            save_dir = f"results/{args.domain}/super/{subfolder}/var-{variables_str}/conv-concat-{args.conv_concat}-dim{args.conv_dim}_avc-c-{args.avg_constraint}_norm-out-{args.norm_method_output}{args.save_name}/"
+            save_dir = f"results/{args.training_experiment}/{args.domain}/{orog_folder}/super/{subfolder}/var-{variables_str}/conv-concat-{args.conv_concat}-dim{args.conv_dim}_avc-c-{args.avg_constraint}_norm-out-{args.norm_method_output}{args.save_name}/"
         elif args.server == "euler":
             save_dir = f"/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear/eng-results/super/{subfolder}/var-{variables_str}/conv-concat-{args.conv_concat}-dim{args.conv_dim}_avc-c-{args.avg_constraint}_norm-out-{args.norm_method_output}{args.save_name}/"
     make_folder(save_dir)

@@ -194,10 +194,11 @@ if __name__ == '__main__':
     
     device = torch.device('cuda')
     
+    orog_folder = "with-orog" if args.add_orography else "no-orog"
     if args.server == "euler":
-        prefix = "/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear/eng-results/"
+        raise NotImplementedError("euler paths not implemented anymore")
     elif args.server == "ada":
-        prefix = f"results/{args.domain}/"
+        prefix = f"results/{args.training_experiment}/{args.domain}/{orog_folder}/"
     
     variables_str = '_'.join(args.variables)
     
