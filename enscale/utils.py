@@ -172,7 +172,7 @@ def normalise(data, mode = "hr", data_type = "tas", sqrt_transform = True, norm_
             data_norm = (data - 1e5) / 1e3
         data_norm = data_norm.reshape(data_norm.shape[0], -1)
     elif norm_method == "normalise_pw":
-        if norm_stats is None:    
+        if norm_stats is None:  
             if mode == "hr":
                 ns_path = os.path.join(root, "norm_stats", mode + "_norm_stats_pixelwise_" + data_type + "_train_ALL" + name_str + ".pt")
             elif mode == "lr":

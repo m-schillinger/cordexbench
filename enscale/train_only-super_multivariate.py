@@ -91,6 +91,9 @@ def visual_sample(model, x, y, save_dir, norm_method=None, norm_stats=None, sqrt
         else:
             sample = torch.cat([y_var.cpu(), gen_var.cpu(), gen_var2.cpu()])
         sample = torch.clamp(sample, torch.quantile(y_var, 0.0005).item(), torch.quantile(y_var, 0.9995).item())
+        
+        if sample.mean() > 200: # tas on K scale leads to plotting issues
+            sample = sample - sample.mean()
         plt.matshow(make_grid(sample, nrow=y.shape[0]).permute(1, 2, 0)[:,:,0], cmap="rainbow"); plt.axis('off'); 
         plt.savefig(save_dir + f"_var-{args.variables[i]}.png", bbox_inches="tight", pad_inches=0, dpi=300); plt.close()
         # save_image(sample, save_dir, normalize=True, scale_each=True)
@@ -261,23 +264,23 @@ if __name__ == '__main__':
         subfolder = f"lr{args.kernel_size_lr}_hr{args.kernel_size_hr}"
     if not args.conv and not args.conv_concat and not args.nicolai_layers:
         if args.server == "ada":
-            save_dir = f"results/{args.method}/super/{subfolder}/var-{variables_str}/hidden{args.hidden_dim}_num-l-{args.num_layer}_layer-shr-{args.layer_shrinkage}_avc-c-{args.avg_constraint}_norm-out-{args.norm_method_output}{args.save_name}/"
+            save_dir = f"results/{args.domain}/super/{subfolder}/var-{variables_str}/hidden{args.hidden_dim}_num-l-{args.num_layer}_layer-shr-{args.layer_shrinkage}_avc-c-{args.avg_constraint}_norm-out-{args.norm_method_output}{args.save_name}/"
         elif args.server == "euler":
             save_dir = f"/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear/eng-results/super/{subfolder}/var-{args.variables[0]}/hidden{args.hidden_dim}_num-l-{args.num_layer}_layer-shr-{args.layer_shrinkage}_avc-c-{args.avg_constraint}_norm-out-{args.norm_method_output}{args.save_name}/"
     elif args.nicolai_layers:
         if args.server == "ada":
             #num_neighbors_ups=9,                          num_neighbours_res=25,                             map_dim=12,                             noise_dim=5,                             mlp_hidden=100,                             mlp_depth=3,                           noise_dim_mlp=0
-            save_dir = f"results/{args.method}/super/{subfolder}/var-{variables_str}/loc-specific-layers_norm-out-{args.norm_method_output}{args.save_name}/"
+            save_dir = f"results/{args.domain}/super/{subfolder}/var-{variables_str}/loc-specific-layers_norm-out-{args.norm_method_output}{args.save_name}/"
         elif args.server == "euler":
             save_dir = f"/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear/eng-results/super/{subfolder}/var-{variables_str}/loc-specific-layers_norm-out-{args.norm_method_output}_{args.save_name}/"
     elif args.conv:
         if args.server == "ada":
-            save_dir = f"results/{args.method}/super/{subfolder}/var-{variables_str}/conv-{args.conv}-dim{args.conv_dim}_avc-c-{args.avg_constraint}_norm-out-{args.norm_method_output}{args.save_name}/"
+            save_dir = f"results/{args.domain}/super/{subfolder}/var-{variables_str}/conv-{args.conv}-dim{args.conv_dim}_avc-c-{args.avg_constraint}_norm-out-{args.norm_method_output}{args.save_name}/"
         elif args.server == "euler":
             save_dir = f"/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear/eng-results/super/{subfolder}/var-{variables_str}/conv-{args.conv}-dim{args.conv_dim}_avc-c-{args.avg_constraint}_norm-out-{args.norm_method_output}{args.save_name}/"
     elif args.conv_concat:
         if args.server == "ada":
-            save_dir = f"results/{args.method}/super/{subfolder}/var-{variables_str}/conv-concat-{args.conv_concat}-dim{args.conv_dim}_avc-c-{args.avg_constraint}_norm-out-{args.norm_method_output}{args.save_name}/"
+            save_dir = f"results/{args.domain}/super/{subfolder}/var-{variables_str}/conv-concat-{args.conv_concat}-dim{args.conv_dim}_avc-c-{args.avg_constraint}_norm-out-{args.norm_method_output}{args.save_name}/"
         elif args.server == "euler":
             save_dir = f"/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear/eng-results/super/{subfolder}/var-{variables_str}/conv-concat-{args.conv_concat}-dim{args.conv_dim}_avc-c-{args.avg_constraint}_norm-out-{args.norm_method_output}{args.save_name}/"
     make_folder(save_dir)
@@ -315,11 +318,6 @@ if __name__ == '__main__':
     
     
     # get run indices also here
-    if args.server == "ada":
-        root = "/r/scratch/groups/nm/downscaling/cordex-ALPS-allyear"
-    elif args.server == "euler":
-        root = "/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear"
-    gcm_list, rcm_list, gcm_dict, rcm_dict = get_rcm_gcm_combinations(root)
     
     #### load data
     train_loader, test_loader_in = get_data_cordexbench(
@@ -347,8 +345,6 @@ if __name__ == '__main__':
     x_te_eval, xc_te_eval, y_te_eval = x_te_eval[:args.n_visual].to(device), xc_te_eval[:args.n_visual].to(device), y_te_eval[:args.n_visual].to(device)
     
     #### get norm stats file
-    if args.server == "euler":
-        args.data_dir = "/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear"
     norm_stats = {}
     for i in range(len(args.variables)):
         if args.kernel_size_hr == 1:
@@ -370,6 +366,8 @@ if __name__ == '__main__':
             name_str = "_sqrt"
         else:
             name_str = ""
+            
+        folder = f"/r/scratch/users/mschillinger/data/cordexbench/{args.domain}"
         if args.kernel_size_hr == 1:
             if args.norm_method_output == "normalise_pw":
                 #ns_path = os.path.join(args.data_dir, "norm_stats", f"{mode_unnorm}_norm_stats_pixelwise_" + args.variables[i] + "_train_ALL" + name_str + ".pt")
@@ -392,14 +390,14 @@ if __name__ == '__main__':
 
                 # torch.save({"mean": hr_mean_all, "std": hr_std_all},
                 #    os.path.join(root, domain, "norm_stats", f"hr_norm_stats_full-data_{file_base}.pt"))
-                ns_path = os.path.join(args.data_dir, "norm_stats", f"{mode_unnorm}_norm_stats_pixelwise_{file_base}.pt")
+                ns_path = os.path.join(folder, "norm_stats", f"{mode_unnorm}_norm_stats_pixelwise_{file_base}.pt")
                 norm_stats[args.variables[i]] = torch.load(ns_path, map_location=device)
             elif args.norm_method_output == "normalise_scalar":
-                ns_path = os.path.join(args.data_dir, "norm_stats", f"{mode_unnorm}_norm_stats_full-data_" + args.variables[i] + "_train_ALL" + name_str + ".pt")
+                ns_path = os.path.join(folder, "norm_stats", f"{mode_unnorm}_norm_stats_full-data_" + args.variables[i] + "_train_ALL" + name_str + ".pt")
                 norm_stats[args.variables[i]] = torch.load(ns_path, map_location=device)
             elif args.norm_method_output == "uniform": #"hr_norm_stats_ecdf_matrix_" + data_type + "_train_" + "ALL" + name_str + ".pt")
                 name_str = ""
-                ns_path = os.path.join(args.data_dir, "norm_stats", f"{mode_unnorm}_norm_stats_ecdf_matrix_" + args.variables[i] + "_train_SUBSAMPLE" + name_str + ".pt")
+                ns_path = os.path.join(folder, "norm_stats", f"{mode_unnorm}_norm_stats_ecdf_matrix_" + args.variables[i] + "_train_SUBSAMPLE" + name_str + ".pt")
                 norm_stats[args.variables[i]] = torch.load(ns_path, map_location=device)
             else:
                 norm_stats[args.variables[i]] = None
