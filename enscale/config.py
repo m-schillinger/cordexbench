@@ -40,7 +40,7 @@ def get_config():
     parser.add_argument('--padding_lr', type=int, default=None, help="average pooling for xc data")   
     parser.add_argument('--kernel_size_hr', type=int, default=1, help="for super-resolution; smooth also the HR target with average kernel to learn intermediate steps")
     parser.add_argument('--mask_gcm', action='store_true', help="mask out the GCM data inside RCM domain (very rough)")
-    parser.add_argument('--tr_te_split', type=str, default="random", choices=["random", "gcm", "rcm", "rcm_gcm", "run_indices"], help="whether to split the data randomly into train / test or test extrapolation based on GCMs")
+    parser.add_argument('--tr_te_split', type=str, default="random", choices=["random", "past_future"], help="whether to split the data randomly into train / test or test extrapolation based on time")
     parser.add_argument('--tr_te_split_ratio', type=float, default=0.9, help="ratio of train data")
     parser.add_argument('--test_model_index', type=int, default=None, help="which GCM to use for TEST data; only if tr_te_split is gcm or rcm")
     parser.add_argument('--train_model_index', type=int, default=None, help="which GCM to use for TRAIN data; only if tr_te_split is gcm or rcm")
