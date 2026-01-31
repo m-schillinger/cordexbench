@@ -7,13 +7,14 @@ import argparse
 import pdb
 import time
 # python eval_multi_step_coarse_from_super.py --variable tasmax --domain ALPS --version tasmax-ALPS-1 --training_experiment Emulator_hist_future --norm_option none --nicolai_layers
+# python eval_multi_step_coarse_from_super.py --variable pr --domain ALPS --version pr-ALPS-scalepw --training_experiment Emulator_hist_future --norm_option scalepw --nicolai_layers
+# python eval_multi_step_coarse_from_super.py --variable pr --domain ALPS --version pr-ALPS-scalarin --training_experiment Emulator_hist_future --norm_option scalar_in --nicolai_layers
 
 class args:
     latent_dims = [None, 12, 12, 12, 12]
     preproc_layers = [True, False, False, False, False]
     noise_dims = [10, 5, 5, 5, 5]
     layer_shrinkages = [1, None, None, None, None]
-    out_acts = [None, None, None, None, None]
     model_types = ["dense", "nicolai", "nicolai", "nicolai", "nicolai"]
     one_hot_options = [None, "argument", "argument", "argument", "argument"]
     one_hot_flags = [False, False, False, False, False]
@@ -91,27 +92,36 @@ def get_model(args):
     assert args.norm_method_output != "rank_val"
     in_dim = x_tr_eval.shape[1]
     
-    #### get norm stats file
-    # TO DO: update
+    #### get norm stats file (aligned with utils.normalise/unnormalise)
     norm_stats = {}
-    for i in range(len(args.variables)):
+    # derive GCM and training period consistent with dataset logic
+    if args.domain == "ALPS":
+        gcm_name = "CNRM-CM5"
+    elif args.domain == "NZ" or args.domain == "SA":
+        gcm_name = "ACCESS-CM2"
+    else:
+        raise ValueError("Unsupported domain for norm stats: " + str(args.domain))
+
+    if args.training_experiment == "ESD_pseudo_reality":
+        period_training = "1961-1980"
+    elif args.training_experiment == "Emulator_hist_future":
+        period_training = "1961-1980_2080-2099"
+    else:
+        raise ValueError("Unsupported training_experiment for norm stats: " + str(args.training_experiment))
+
+    for var in args.variables:
         mode_unnorm = "hr"
-        if args.variables[i] in ["pr", "sfcWind"] and args.sqrt_transform_out:
-            name_str = "_sqrt"
-        else:
-            name_str = ""
-        if args.norm_method_output == "normalise_pw":
-            ns_path = os.path.join(args.data_dir, "norm_stats", f"{mode_unnorm}_norm_stats_pixelwise_" + args.variables[i] + "_train_ALL" + name_str + ".pt")
-            norm_stats[args.variables[i]] = torch.load(ns_path, map_location=device)
+        name_str = "_sqrt" if (var in ["pr", "sfcWind"] and args.sqrt_transform_out) else ""
+        file_base = f"{args.training_experiment}_{var}_{gcm_name}_{period_training}{name_str}"
+
+        if args.norm_method_output == "normalise_pw" or args.norm_method_output == "scale_pw":
+            ns_path = os.path.join(args.data_dir, "norm_stats", f"{mode_unnorm}_norm_stats_pixelwise_{file_base}.pt")
+            norm_stats[var] = torch.load(ns_path, map_location=device)
         elif args.norm_method_output == "normalise_scalar":
-            ns_path = os.path.join(args.data_dir, "norm_stats", f"{mode_unnorm}_norm_stats_full-data_" + args.variables[i] + "_train_ALL" + name_str + ".pt")
-            norm_stats[args.variables[i]] = torch.load(ns_path, map_location=device)
-        elif args.norm_method_output == "uniform": #"hr_norm_stats_ecdf_matrix_" + data_type + "_train_" + "ALL" + name_str + ".pt")
-            name_str = ""
-            ns_path = os.path.join(args.data_dir, "norm_stats", f"{mode_unnorm}_norm_stats_ecdf_matrix_" + args.variables[i] + "_train_SUBSAMPLE" + name_str + ".pt")
-            norm_stats[args.variables[i]] = torch.load(ns_path, map_location=device)
+            ns_path = os.path.join(args.data_dir, "norm_stats", f"{mode_unnorm}_norm_stats_full-data_{file_base}.pt")
+            norm_stats[var] = torch.load(ns_path, map_location=device)
         else:
-            norm_stats[args.variables[i]] = None
+            norm_stats[var] = None
             
     in_dim = x_tr_eval.shape[1]
         
@@ -119,7 +129,7 @@ def get_model(args):
         # prefix = "/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear/results/"
         pass
     elif args.server == "ada":
-        prefix = f"results/{args.training_experiment}/{args.domain}/"
+        prefix = f"results/{args.training_experiment}/{args.domain}/no-orog/"
                    
     
     loaded_models = []
@@ -198,6 +208,7 @@ def get_model(args):
                             noise_dim_mlp=args.noise_dim_mlp[i],
                             double_linear=args.double_linear[i],
                             split_residuals=not args.not_split_residuals,
+                            out_act=out_act,
                             ).to(device)
     
         ckpt_path = os.path.join(save_dir, f"model_{burn_in}.pt")
@@ -290,7 +301,7 @@ if __name__ == '__main__':
     parser.add_argument('--split_coarse_super', action='store_true', help='Enable split coarse super mode')
     parser.add_argument('--pure_super', action='store_true', help='Enable pure super mode')
     parser.add_argument('--version', type=str, default = "6", help='Version of the samples to save')
-    parser.add_argument('--norm_option', type=str, choices = ["none", "pw"])
+    parser.add_argument('--norm_option', type=str, choices = ["none", "pw", "scale_pw", "scalar_in"])
     parser.add_argument('--add_interm_loss', action='store_true', help='Enable intermediate loss')
     parser.add_argument('--add_mse_loss', action='store_true', help='Enable extra MSE loss')
     parser.add_argument('--use_double_linear', action='store_true')
@@ -336,12 +347,24 @@ if __name__ == '__main__':
     if args.norm_option == "none":
         args.norm_method_input = None
         args.norm_method_output = None
-        args.normal_transform = True
+        args.normal_transform = False # TO DO: correct?; check for temperature
         args.sqrt_transform_in = False
         args.sqrt_transform_out = False
+    elif args.norm_option == "scalar_in":
+        args.norm_method_input = "normalise_scalar"
+        args.norm_method_output = None
+        args.normal_transform = False
+        args.sqrt_transform_in = True
+        args.sqrt_transform_out = True
     elif args.norm_option == "pw":
-        args.norm_method_input = None
+        args.norm_method_input = "normalise_scalar"
         args.norm_method_output = "normalise_pw"
+        args.normal_transform = False
+        args.sqrt_transform_in = True
+        args.sqrt_transform_out = True
+    elif args.norm_option == "scale_pw":
+        args.norm_method_input = "normalise_scalar"
+        args.norm_method_output = "scale_pw"
         args.normal_transform = False
         args.sqrt_transform_in = True
         args.sqrt_transform_out = True
@@ -359,14 +382,11 @@ if __name__ == '__main__':
         args.conv_dims = [None, None, None, None, None]
         args.kernel_sizes = [16, 8, 4, 2, 1]
         args.vars_as_channels = [False, False, False, False, False]
-        args.not_split_residuals = True
-        
-
         args.one_hot_flags = [False, False, False, False, False]
         
         # specifications for nicolai layers
-        num_neighbors_ups = [None, 9, 9, 9, 9]
-        num_neighbors_res = [None, 25, 25, 25, 25]
+        args.num_neighbors_ups = [None, 9, 9, 9, 9]
+        
         noise_dim_mlp = [None, 0, 0, 0, 0]
         if args.use_double_linear:
             args.double_linear = [None, True, True, True, True]
@@ -374,16 +394,65 @@ if __name__ == '__main__':
             args.double_linear = [None, False, False, False, False]        
             
         if args.norm_option == "none" and args.variable == "tasmax":
+            args.out_acts = [None, None, None, None, None]
+
             args.latent_dims = [None, 12, 12, 12, 12] 
+            args.num_neighbors_res = [None, 25, 25, 25, 25]
             args.model_dirs = [
                 #"coarse/var-tas_pr_sfcWind_rsds/hd-200_num-lay-6_norm-out-normalise_pw_preproc_norm-loss-per-var-p4/",
-                "coarse/var-tasmax/hd-200_num-lay-6_norm-out-None/",
-                "super/lr16_hr8/var-tasmax/loc-specific-layers_norm-out-None_dec1e-3_lam-mse0_split-resid-False/",
-                "super/lr8_hr4/var-tasmax/loc-specific-layers_norm-out-None_dec1e-3_lam-mse0_split-resid-False/",
-                "super/lr4_hr2/var-tasmax/loc-specific-layers_norm-out-None_dec1e-3_lam-mse0_split-resid-False/",
-                "super/lr2_hr1/var-tasmax/loc-specific-layers_norm-out-None_dec1e-3_lam-mse0_split-resid-False/",
+                "coarse/var-tasmax/hd-200_num-lay-6_norm-out-None_v2/",
+                "super/lr16_hr8/var-tasmax/loc-specific-layers_norm-out-None_dec1e-3_lam-mse0_split-residFalse_v2/",
+                "super/lr8_hr4/var-tasmax/loc-specific-layers_norm-out-None_dec1e-3_lam-mse0_split-residFalse_v2/",
+                "super/lr4_hr2/var-tasmax/loc-specific-layers_norm-out-None_dec1e-3_lam-mse0_split-residFalse_v2/",
+                "super/lr2_hr1/var-tasmax/loc-specific-layers_norm-out-None_dec1e-3_lam-mse0_split-residFalse_v2/",
             ]
-            args.burn_ins = [99, 199, 199, 199, 199]
+            args.burn_ins = [1999, 3999, 3999, 3999, 999]
+            args.not_split_residuals = True
+
+        elif args.norm_option == "pw" and args.variable == "tasmax":
+            args.out_acts = [None, None, None, None, None]
+            args.latent_dims = [None, 12, 12, 12, 12] 
+            args.num_neighbors_res = [None, 9, 9, 25, 25] # BUG
+            args.model_dirs = [
+                #"coarse/var-tas_pr_sfcWind_rsds/hd-200_num-lay-6_norm-out-normalise_pw_preproc_norm-loss-per-var-p4/",
+                "coarse/var-tasmax/hd-200_num-lay-6_norm-out-normalise_pw_norm-in-normalise_scalar/",
+                "super/lr16_hr8/var-tasmax/loc-specific-layers_norm-out-normalise_pw_dec1e-3_lam-mse0_split-residFalse/",
+                "super/lr8_hr4/var-tasmax/loc-specific-layers_norm-out-normalise_pw_dec1e-3_lam-mse0_split-residFalse/",
+                "super/lr4_hr2/var-tasmax/loc-specific-layers_norm-out-normalise_pw_dec1e-3_lam-mse0_split-residFalse/",
+                "super/lr2_hr1/var-tasmax/loc-specific-layers_norm-out-normalise_pw_dec1e-3_lam-mse0_split-residFalse/",
+            ]
+            args.burn_ins = [1999, 3999, 3999, 999, 999]
+            args.not_split_residuals = True
+
+        elif args.norm_option == "scalar_in" and args.variable == "pr":
+            args.out_acts = ["relu", None, None, None, None]
+            args.latent_dims = [None, 12, 12, 12, 12] 
+            args.num_neighbors_res = [None, 9, 9, 25, 25] # BUG
+            args.model_dirs = [
+                #"coarse/var-tas_pr_sfcWind_rsds/hd-200_num-lay-6_norm-out-normalise_pw_preproc_norm-loss-per-var-p4/",
+                "coarse/var-pr/hd-200_num-lay-6_norm-out-None_relu_norm-in-normalise_scalar/",
+                "super/lr16_hr8/var-pr/loc-specific-layers_norm-out-None_dec0_lam-mse0_split-residTrue/",
+                "super/lr8_hr4/var-pr/loc-specific-layers_norm-out-None_dec0_lam-mse0_split-residTrue/",
+                "super/lr4_hr2/var-pr/loc-specific-layers_norm-out-None_dec0_lam-mse0_split-residTrue/",
+                "super/lr2_hr1/var-pr/loc-specific-layers_norm-out-None_dec0_lam-mse0_split-residTrue/",
+            ]
+            args.burn_ins = [999, 3999, 3999, 999, 999]
+            args.not_split_residuals = False
+
+        elif args.norm_option == "scale_pw" and args.variable == "pr":
+            args.out_acts = ["relu", "relu", "relu", "relu", "relu"]
+            args.num_neighbors_res = [None, 9, 9, 25, 25] # BUG
+            args.model_dirs = [
+                #"coarse/var-tas_pr_sfcWind_rsds/hd-200_num-lay-6_norm-out-normalise_pw_preproc_norm-loss-per-var-p4/",
+                "coarse/var-pr/hd-200_num-lay-6_norm-out-scale_pw_relu_norm-in-normalise_scalar/",
+                "super/lr16_hr8/var-pr/loc-specific-layers_norm-out-scale_pw_relu_dec0_lam-mse0_split-residTrue/",
+                "super/lr8_hr4/var-pr/loc-specific-layers_norm-out-scale_pw_relu_dec0_lam-mse0_split-residTrue/",
+                "super/lr4_hr2/var-pr/loc-specific-layers_norm-out-scale_pw_relu_dec0_lam-mse0_split-residTrue/",
+                "super/lr2_hr1/var-pr/loc-specific-layers_norm-out-scale_pw_relu_dec0_lam-mse0_split-residTrue/",
+            ]
+            args.burn_ins = [999, 3999, 3999, 999, 999]
+            args.not_split_residuals = False
+
             
     model, coarse_model_marginal, param_dict = get_model(args)
     
@@ -396,9 +465,9 @@ if __name__ == '__main__':
 
 
     if args.server == "euler":
-        save_dir_samples = "/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear/samples_multivariate/" + f"maybritt_{args.version}/"
+        save_dir_samples = "/cluster/work/math/climate-downscaling/cordex-data/cordex-ALPS-allyear/samples_cordexbench/" + f"maybritt_{args.version}/"
     else:
-        save_dir_samples = f"/r/scratch/groups/nm/downscaling/samples_multivariate/{args.training_experiment}/{args.domain}/{orog_folder}/" + f"maybritt_{args.version}/"   
+        save_dir_samples = f"/r/scratch/groups/nm/downscaling/samples_cordexbench/{args.training_experiment}/{args.domain}/{orog_folder}/" + f"maybritt_{args.version}/"   
     
     print("saving samples in ", save_dir_samples)
     os.makedirs(save_dir_samples, exist_ok=True)
@@ -421,7 +490,7 @@ if __name__ == '__main__':
             domain=args.domain,
             training_experiment=args.training_experiment,
             shuffle=False, batch_size=512,
-            tr_te_split = "random", test_size=0.1,
+            tr_te_split = "random", test_size=0.0,
             server=args.server,
             variables=args.variables, variables_lr=args.variables_lr,
             mode = "train",
@@ -583,29 +652,4 @@ if __name__ == '__main__':
         print("Time taken for unnormalisation: ", end - start)
         
         suffix = "" if not args.approx_unif else "_approx"
-        if args.split_coarse_super:
-            gen_coarse = torch.cat(gen_coarse_list)
-            torch.save(gen_coarse, save_dir_samples + f'idx{k}_inter_gen-coarse{suffix}.pt')
-            torch.save(samples_raw, save_dir_samples + f'idx{k}_inter_gen-super-from-coarse{suffix}.pt')
-        elif args.pure_super:
-            gen_coarse = torch.cat(gen_coarse_list)
-            torch.save(gen_coarse, save_dir_samples + f'idx{k}_inter_true-coarse{suffix}.pt')
-            torch.save(samples_raw, save_dir_samples + f'idx{k}_inter_gen-pure-super{suffix}.pt')
-        
-        elif not counterfactuals and not args.save_quantiles:
-            if mode == "test_interpolation":
-                torch.save(samples_norm, save_dir_samples + f'idx{k}_inter{suffix}_unif.pt')
-                torch.save(samples_raw, save_dir_samples + f'idx{k}_inter{suffix}.pt')
-            elif mode == "test_extrapolation":
-                torch.save(samples_norm, save_dir_samples + f'idx{k}_extra{suffix}_unif.pt')
-                torch.save(samples_raw, save_dir_samples + f'idx{k}_extra{suffix}.pt')
-        
-        elif counterfactuals:
-            if mode == "test_interpolation":
-                torch.save(samples_raw, save_dir_samples + f'idx{k}_inter_counterfact_base-for{i_new}{suffix}.pt')
-            elif mode == "test_extrapolation":
-                torch.save(samples_raw, save_dir_samples + f'idx{k}_extra_counterfact_base-for{i_new}{suffix}.pt')
-            if mode == "test_interpolation":
-                torch.save(samples_counterfact_raw, save_dir_samples + f'idx{k}_inter_counterfact{i_new}{suffix}.pt')
-            elif mode == "test_extrapolation":
-                torch.save(samples_counterfact_raw, save_dir_samples + f'idx{k}_extra_counterfact{i_new}{suffix}.pt')
+        torch.save(samples_raw, os.path.join(save_dir_samples, f"samples_{mode}{suffix}.pt"))
