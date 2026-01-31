@@ -155,7 +155,8 @@ class LocalResiduals(nn.Module):
                  mlp_depth, 
                  shared_noise=False, 
                  noise_dim_mlp=None, 
-                 num_classes=1):
+                 num_classes=1,
+                 out_act=None):
         super().__init__()
         self.height = height
         self.width = width
@@ -170,6 +171,7 @@ class LocalResiduals(nn.Module):
         else:
             self.noise_dim_mlp = noise_dim_mlp
         self.num_classes = num_classes
+        self.out_act = out_act
         
         # Weight map: (C, H*W, k, map_dim, n_features + noise_dim)
         if num_classes > 1:
@@ -187,6 +189,8 @@ class LocalResiduals(nn.Module):
                 out_dim = mlp_hidden if i < mlp_depth - 1 else n_features
                 mlp_layers.append(nn.Linear(in_dim, out_dim))
                 if i < mlp_depth - 1:
+                    mlp_layers.append(nn.ReLU())
+                elif self.out_act == "relu":
                     mlp_layers.append(nn.ReLU())
                 in_dim = out_dim
             self.mlp = nn.Sequential(*mlp_layers)
@@ -380,7 +384,8 @@ class RectUpsampleWithResiduals(nn.Module):
                  shared_noise=False, 
                  noise_dim_mlp=None, 
                  double_linear=False,
-                 split_residuals=True):
+                 split_residuals=True,
+                 out_act=None):
         super().__init__()
         self.upsampler = RectUpsampler(
             grid_size_lo=grid_size_lo,
@@ -405,7 +410,8 @@ class RectUpsampleWithResiduals(nn.Module):
                 mlp_depth=mlp_depth,
                 shared_noise=shared_noise,
                 noise_dim_mlp=noise_dim_mlp,
-                num_classes=num_classes_resid
+                num_classes=num_classes_resid,
+                out_act=out_act
             )
         self.split_residuals = split_residuals
 
