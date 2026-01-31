@@ -1,4 +1,5 @@
 import os
+
 import torch
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
@@ -15,11 +16,18 @@ import scipy
 
 # -------------- DATASET CLASS ---------------------------------------
 
-def get_normed_data(lr_ds, data_type, norm_input, sqrt_transform_in, root, domain="ALPS"):
+def get_normed_data(lr_ds, data_type, norm_input, sqrt_transform_in, root, domain="ALPS", training_experiment = 'Emulator_hist_future', 
+                   gcm_name="CNRM-CM5", period_training="1961-1980_2080-2099"):
+    
     lr_data = torch.flip(torch.from_numpy(lr_ds[data_type].data), [1])
     # data = torch.from_numpy(lr_ds[data_type].data)
     # bring lr_data to the right units
-    lr_data_norm = normalise(lr_data, mode = "lr", data_type = data_type, sqrt_transform = sqrt_transform_in, norm_method = norm_input, root=root + domain)
+    lr_data_norm = normalise(lr_data, mode = "lr", data_type = data_type, sqrt_transform = sqrt_transform_in, norm_method = norm_input, root=root,
+                             logit=False, normal=False,
+                            domain=domain,
+                            training_experiment=training_experiment,
+                            gcm_name=gcm_name,
+                            period_training=period_training)
         
     return lr_data_norm
 
@@ -86,6 +94,7 @@ class DownscalingDatasetTwoStepNormed(Dataset):
                  padding_lr = None,
                  filter_outliers=False,
                  precip_zeros = "random",
+                orog_file="Static_fields.nc",
                  ):
         """
         Notes
@@ -110,7 +119,7 @@ class DownscalingDatasetTwoStepNormed(Dataset):
         # Set the GCM
         if domain == 'ALPS':
             gcm_name = 'CNRM-CM5'
-        elif domain == 'NZ':
+        elif domain == 'NZ' or domain == 'SA':
             gcm_name = 'ACCESS-CM2'
                 
         hr_tensors = []
@@ -121,60 +130,7 @@ class DownscalingDatasetTwoStepNormed(Dataset):
         # n_channels is 1 for now, but 2 later after fft
         
         if norm_output == "uniform_per_model" or norm_output == "uniform": 
-            raise NotImplementedError("Please use norm_output unequal to uniform or uniform_per_model, as these have been removed for now.")          
-                # example: pr_day_EUR-11_ALADIN63_MPI-ESM-LR_r1i1p1_rcp85_ALPS_cordexgrid_train-period.nc
-            if mode == "train":
-                folder_unif = "train_norm_unif"
-            elif mode == "test_interpolation":
-                folder_unif = "test_norm_unif/interpolation"
-            elif mode == "test_extrapolation":
-                folder_unif = "test_norm_unif/extrapolation"
-            assert not sqrt_transform_out
-            if norm_output == "uniform_per_model":
-                assert not filter_outliers
-                if data_type == "pr":
-                    #pr_day_EUR-11_CCLM4-8-17_MPI-ESM-LR_r1i1p1_rcp85_ALPS_cordexgrid_train-period_per-model-full-period_noisy.nc
-                    # pr_day_EUR-11_CCLM4-8-17_CNRM-CM5_r1i1p1_rcp85_ALPS_cordexgrid_train-period_per-model-full-period_noisy.nc
-                    hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_per-model-full-period_noisy.nc")
-                else:
-                    #tas_day_EUR-11_ALADIN63_CNRM-CM5_r1i1p1_rcp85_ALPS_cordexgrid_train-period_subsample-per-model.nc
-                    hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-per-model.nc")    
-            else: 
-                if data_type == "pr":
-                    if not filter_outliers:
-                        if precip_zeros == "random_correlated":
-                            hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-v2-random-correlated.nc")
-                        elif precip_zeros == "random":
-                            hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-v2-random.nc")
-                        elif precip_zeros == "constant":
-                            hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-v2.nc")
-                    else:
-                        hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-v2-random-filtered.nc")
-                else:
-                    if not filter_outliers or data_type == "tas" or data_type == "sfcWind":
-                        hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-v2.nc")
-                    else:
-                        # rsds and filter outliers
-                        hr_path = os.path.join(root, folder_unif, data_type + "_day_EUR-11_" + rcm + "_" + gcm + "_" + variant + "_rcp85_ALPS_cordexgrid" +  file_suffix + "_subsample-v2-filtered.nc")
-            # flipping the data to have correct north-south orientation
-            hr_ds = xr.open_dataset(hr_path)
-            
-            if only_winter:
-                months = np.float32(hr_ds.indexes['time'].strftime("%m")).astype("int")
-                hr_ds = hr_ds.sel(time = (months == 12) | (months == 1) | (months == 2))
-            
-            hr_data = torch.flip(torch.from_numpy(hr_ds[data_type].data), [1])
-            hr_data_norm = hr_data.float().view(hr_data.shape[0], -1)
-            if logit:
-                hr_data_norm = torch.logit(hr_data_norm)
-            elif normal:
-                #hr_data_norm_notransf = torch.clone(hr_data_norm)
-                hr_np = hr_data_norm.detach().cpu().numpy()
-                hr_np_gauss = scipy.stats.norm.ppf(hr_np) # more stable than torch.Normal.icdf
-                hr_data_norm = torch.from_numpy(hr_np_gauss).to(hr_data_norm.dtype).to(hr_data_norm.device)
-
-                if torch.any(torch.isnan(hr_data_norm)) or torch.any(torch.isinf(hr_data_norm)):
-                    print("data issues (have nans)", rcm, gcm)
+            raise NotImplementedError("Please use norm_output unequal to uniform or uniform_per_model, as these have been removed for now.")     
                 
         else:
             # example: pr_day_EUR-11_ALADIN63_MPI-ESM-LR_r1i1p1_rcp85_ALPS_cordexgrid_train-period.nc
@@ -193,8 +149,12 @@ class DownscalingDatasetTwoStepNormed(Dataset):
                     # changed to batchwise clipping to shorten preprocessing time
                     hr_data = batchwise_quantile_clipping(hr_data, q = clip_quantile, batch_size = 365)
                     
-                hr_data_norm = normalise(hr_data, mode = "hr", data_type = data_type, sqrt_transform = sqrt_transform_out, norm_method = norm_output, root=root + domain,
-                                        logit=logit, normal=normal)
+                hr_data_norm = normalise(hr_data, mode = "hr", data_type = data_type, 
+                                         sqrt_transform = sqrt_transform_out, norm_method = norm_output, root=root,
+                                        logit=logit, normal=normal,
+                                        domain=domain, training_experiment=training_experiment, 
+                                        gcm_name=gcm_name,
+                                        period_training=period_training,)
                 # if numpy array, convert to torch tensor again
                 if isinstance(hr_data_norm, np.ndarray):
                     hr_data_norm = torch.from_numpy(hr_data_norm)
@@ -225,6 +185,8 @@ class DownscalingDatasetTwoStepNormed(Dataset):
 
         lr_path = f'{DATA_PATH}/{folder}/{training_experiment}/predictors/{gcm_name}_{period_training}.nc'
         lr_ds = xr.open_dataset(lr_path)
+        lr_ds = lr_ds.astype("float32")
+
         
         if len(lr_ds.time) != len(hr_ds.time):
             print("Length mismatch. Should investigate further!")
@@ -232,12 +194,15 @@ class DownscalingDatasetTwoStepNormed(Dataset):
         if data_types_lr is None or data_types_lr == ["all"]:
             # get all available variables except time and lat/lon
             data_types_lr = list(lr_ds.data_vars)
+            # remove time_bounds from predictors list if present
+            data_types_lr = [v for v in data_types_lr if v != "time_bnds"]
             
             
         for data_type in data_types_lr:
             # low-res   
 
-            lr_data_norm = get_normed_data(lr_ds, data_type, norm_input, sqrt_transform_in, root, domain=domain)
+            lr_data_norm = get_normed_data(lr_ds, data_type, norm_input, sqrt_transform_in, root, domain=domain, training_experiment=training_experiment,
+                                          gcm_name=gcm_name, period_training=period_training)
             lr_tensors.append(lr_data_norm.unsqueeze(1))             
 
         lr_data_allvars = torch.concat(lr_tensors, dim = 1) # shape (n_timesteps, n_vars, spatial_dim), where spatial_dim = 20*36 or 20*36 + value_dim        
@@ -281,6 +246,17 @@ class DownscalingDatasetTwoStepNormed(Dataset):
         self.z_data = hr_data_coarsened_allvars
         print("z (x coarsened) data:", self.z_data.shape)
         
+        orog_path = root + domain + f"/{domain}_domain/train/{training_experiment}/predictors"
+        static_ds = xr.open_dataset(os.path.join(orog_path, orog_file))
+        orog_hr = torch.flip(torch.from_numpy(static_ds["orog"].values), [0]).float() # shape (128, 128)
+        orog_hr = (orog_hr - orog_hr.mean()) / orog_hr.std() # primitive normalisation
+        
+        if kernel_size_hr > 1:
+            orog_hr =  torch.nn.functional.avg_pool2d(orog_hr.view(1, 1, 128, 128), kernel_size=kernel_size_hr, stride=kernel_size_hr).view(-1)
+        else:
+            orog_hr = orog_hr.view(-1)
+        self.orog = orog_hr # shape (spatial_dim_hr,)
+        
     def __len__(self):
         assert self.x_data.shape[0] == self.y_data.shape[0]
         assert self.x_data.shape[0] == self.z_data.shape[0]
@@ -322,7 +298,8 @@ def get_data_cordexbench(
         kernel_size=1, kernel_size_hr=1, return_timepair=False,
         clip_quantile=None, logit=False, normal=False, include_year=False,
         only_winter=False, stride_lr=None, padding_lr=None,
-        filter_outliers=False, precip_zeros="random",):
+        filter_outliers=False, precip_zeros="random",
+        return_dataset=False, return_orog=False):
     """
     Get data loaders for two-step downscaling (GCM to coarse RCM to fine RCM).
     Wrapper around DownscalingDatasetTwoStepNormed.
@@ -371,8 +348,7 @@ def get_data_cordexbench(
                                             stride_lr=stride_lr,
                                             padding_lr=padding_lr,
                                             filter_outliers=filter_outliers,
-                                            precip_zeros=precip_zeros)                                            
-        
+                                            precip_zeros=precip_zeros)
     
     if tr_te_split == "random":
         # REMOVED all RCMs except ALADIN
@@ -386,7 +362,16 @@ def get_data_cordexbench(
         else:
             dataloader_train = DataLoader(full_dataset, batch_size, shuffle=shuffle)
             dataloader_test = None
+    elif tr_te_split == "past_future":
+        train_indices = np.arange(0, (14600//2))
+        test_indices = np.arange(14600//2 + 1, 14600)
+        dataset_train = Subset(full_dataset, train_indices)
+        dataset_test = Subset(full_dataset, test_indices)
+        dataloader_train = DataLoader(dataset_train, batch_size, shuffle=shuffle)
+        dataloader_test = DataLoader(dataset_test, batch_size, shuffle=shuffle)    
     else:
-        raise NotImplementedError("Please use tr_te_split=random, other options have been removed for simplicity.")
-        
+        raise NotImplementedError("Please use tr_te_split=random or past_future, other options have been removed for simplicity.")
+    
+    if return_dataset:
+        return dataloader_train, dataloader_test, full_dataset
     return dataloader_train, dataloader_test
