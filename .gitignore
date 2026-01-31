@@ -1,2 +1,4 @@
 enscale/results/*
 *.pyc
+logs/*
+log_*
