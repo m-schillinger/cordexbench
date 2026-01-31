@@ -219,129 +219,206 @@ def normalise(data, mode = "hr", data_type = "tas", sqrt_transform = True, norm_
     return data_norm
 
 
-def unnormalise(data_norm, mode = "hr", data_type = "tas", sqrt_transform = True, 
-                norm_method = "primitive", norm_stats=None, 
-                root=None, final_square=True,
-                sep_mean_std=False,
-                n_keep_vals = 1000, len_full_data=int(3e4), logit=False,
-                normal=False,
-                x=None, s1=None,
-                approx_unif=False, interp_step=10):
+# ...existing code...
+
+def normalise(
+    data,
+    mode="hr",
+    data_type="tasmax",
+    sqrt_transform=True,
+    norm_method="primitive",
+    norm_stats=None,
+    root="/r/scratch/users/mschillinger/data/cordexbench",
+    domain="ALPS",
+    training_experiment="Emulator_hist_future",
+    gcm_name="CNRM-CM5",
+    period_training="1961-1980_2080-2099",
+    len_full_data=int(3e4),  # kept for compatibility (unused)
+    logit=False,             # kept for compatibility (unused)
+    normal=False             # kept for compatibility (unused)
+):
+    """
+    Normalise data with either primitive constants or precomputed stats.
+
+    data_type examples:
+      - HR targets: "pr", "tasmax"
+      - LR predictors: "q_500", "t_700", etc.
+
+    norm_method:
+      - "primitive"
+      - "normalise_pw" (pixelwise)
+      - "normalise_scalar" (full-data)
+    """
+    if data_type in ["pr", "sfcWind"] and sqrt_transform:
+        name_str = "_sqrt"
+        data = torch.sqrt(data)
+    else:
+        name_str = ""
+
+    if norm_method == "primitive":
+        if data_type == "tas" or data_type == "tasmax":
+            data_norm = (data - 10) / 10
+        elif data_type == "pr":
+            data_norm = data  # no norm needed
+        elif data_type == "rsds":
+            data_norm = (data - 150) / 100
+        elif data_type == "sfcWind":
+            data_norm = (data - 2.2) / 0.6
+        elif data_type == "psl":
+            data_norm = (data - 1e5) / 1e3
+        else:
+            # fallback: no normalization
+            data_norm = data
+        return data_norm.reshape(data_norm.shape[0], -1)
+
+    # Build file_base for new naming convention
+    file_base = f"{training_experiment}_{data_type}_{gcm_name}_{period_training}{name_str}"
+
+    if norm_method == "normalise_pw":
+        if norm_stats is None:
+            ns_path = os.path.join(root, domain, "norm_stats", f"{mode}_norm_stats_pixelwise_{file_base}.pt")
+            if isinstance(data, torch.Tensor):
+                norm_stats = torch.load(ns_path, map_location=data.device)
+            else:
+                norm_stats = torch.load(ns_path)
+                
+        data_norm = (data - norm_stats["mean"]) / norm_stats["std"]
+        return data_norm.reshape(data_norm.shape[0], -1)
+
+    elif norm_method == "scale_pw":
+        if norm_stats is None:
+            ns_path = os.path.join(root, domain, "norm_stats", f"{mode}_norm_stats_pixelwise_{file_base}.pt")
+            if isinstance(data, torch.Tensor):
+                norm_stats = torch.load(ns_path, map_location=data.device)
+            else:
+                norm_stats = torch.load(ns_path)
+        data_norm = (data) / norm_stats["std"]
+        return data_norm.reshape(data_norm.shape[0], -1)
+
+    if norm_method == "normalise_scalar":
+        if norm_stats is None:
+            ns_path = os.path.join(root, domain, "norm_stats", f"{mode}_norm_stats_full-data_{file_base}.pt")
+            if isinstance(data, torch.Tensor):
+                norm_stats = torch.load(ns_path, map_location=data.device)
+            else:
+                norm_stats = torch.load(ns_path)
+        data_norm = (data - norm_stats["mean"]) / norm_stats["std"]
+        return data_norm.reshape(data_norm.shape[0], -1)
+
+    # Print previously defined ns_path (if any)
+    if 'ns_path' in locals():
+        print(f"loaded norm stats from: {ns_path}")
+    # Fallback: flatten only
+    return data.reshape(data.shape[0], -1)
+
+# ...existing code...
+
+def unnormalise(
+    data_norm,
+    mode="hr",
+    data_type="tasmax",
+    sqrt_transform=True,
+    norm_method="primitive",
+    norm_stats=None,
+    root="/r/scratch/users/mschillinger/data/cordexbench",
+    final_square=True,
+    sep_mean_std=False,          # kept for compatibility (unused)
+    n_keep_vals=1000,            # kept for compatibility (unused)
+    len_full_data=int(3e4),      # kept for compatibility (unused)
+    logit=False,                 # kept for compatibility (unused)
+    normal=False,                # kept for compatibility (unused)
+    x=None, s1=None,             # kept for compatibility; s1 is derived below
+    approx_unif=False,           # kept for compatibility (unused)
+    interp_step=10,              # kept for compatibility (unused)
+    domain="ALPS",
+    training_experiment="Emulator_hist_future",
+    gcm_name="CNRM-CM5",
+    period_training="1961-1980_2080-2099"
+):
+    """
+    Unnormalise data using primitive constants or precomputed stats.
+    """
     if data_type in ["pr", "sfcWind"] and sqrt_transform:
         name_str = "_sqrt"
     else:
         name_str = ""
+
+    # Determine output spatial dimensions
     if mode == "hr":
-        s1 = 128
-        s2 = 128
+        s1 = 128; s2 = 128
     elif mode == "lr":
-        s1 = 20
-        s2 = 36
+        s1 = 20; s2 = 36
     elif mode == "hr_avg":
-        s1 = 8
-        s2 = 8
+        s1 = 8; s2 = 8
     elif mode == "hr_avg_2":
-        s1 = 64
-        s2 = 64
+        s1 = 64; s2 = 64
     elif mode == "hr_avg_4":
-        s1 = 32
-        s2 = 32
+        s1 = 32; s2 = 32
     elif mode == "hr_avg_8":
-        s1 = 16
-        s2 = 16        
+        s1 = 16; s2 = 16
     elif mode == "hr_avg_32":
-        s1 = 4
-        s2 = 4
+        s1 = 4; s2 = 4
     elif mode == "hr_avg_64":
-        s1 = 2
-        s2 = 2
-    
+        s1 = 2; s2 = 2
+    else:
+        # Fallback: try square
+        side = int(np.sqrt(data_norm.shape[-1]))
+        s1 = side; s2 = side
+
     if norm_method == "primitive":
-        if data_type == "tas":
+        if data_type == "tas" or data_type == "tasmax":
             data = data_norm * 10 + 10
         elif data_type == "pr":
-            data = data_norm # no denorm needed
+            data = data_norm  # no denorm needed
         elif data_type == "rsds":
             data = data_norm * 100 + 150
         elif data_type == "sfcWind":
             data = data_norm * 0.6 + 2.2
         elif data_type == "psl":
             data = data_norm * 1e3 + 1e5
+        else:
+            data = data_norm
         data = data.view(data.shape[0], s1, s2)
+
     elif norm_method == "normalise_pw":
-        if norm_stats is None:    
-            if mode == "hr":
-                ns_path = os.path.join(root, "norm_stats", mode + "_norm_stats_pixelwise_" + data_type + "_train_ALL" + name_str + ".pt")
-            elif mode == "lr":
-                ns_path = os.path.join(root, "norm_stats", mode + "_norm_stats_pixelwise_" + data_type + "_train_ALL" + name_str + ".pt")
-            elif mode == "hr_avg":
-                ns_path = os.path.join(root, "norm_stats", "hr_avg8x8_norm_stats_pixelwise_" + data_type + "_train_ALL" + name_str + ".pt")
+        if norm_stats is None:
+            ns_path = os.path.join(root, domain, "norm_stats",
+                                   f"{mode}_norm_stats_pixelwise_{training_experiment}_{data_type}_{gcm_name}_{period_training}{name_str}.pt")
             norm_stats = torch.load(ns_path)
         data_norm = data_norm.view(data_norm.shape[0], s1, s2)
-        # move norm stats to the same device as data_norm
-        device = data_norm.device
+        device = data_norm.device if isinstance(data_norm, torch.Tensor) else "cpu"
         mean = norm_stats["mean"].to(device)
         std = norm_stats["std"].to(device)
         data = data_norm * std + mean
-
+        
+    elif norm_method == "scale_pw":
+        if norm_stats is None:
+            ns_path = os.path.join(root, domain, "norm_stats",
+                                   f"{mode}_norm_stats_pixelwise_{training_experiment}_{data_type}_{gcm_name}_{period_training}{name_str}.pt")
+            norm_stats = torch.load(ns_path)
+        data_norm = data_norm.view(data_norm.shape[0], s1, s2)
+        device = data_norm.device if isinstance(data_norm, torch.Tensor) else "cpu"
+        std = norm_stats["std"].to(device)
+        data = data_norm * std
+        
     elif norm_method == "normalise_scalar":
         if norm_stats is None:
-            if mode == "hr":
-                ns_path = os.path.join(root, "norm_stats", mode + "_norm_stats_full-data_" + data_type + "_train_ALL" + name_str + ".pt")
-            elif mode == "lr":
-                ns_path = os.path.join(root, "norm_stats", mode + "_norm_stats_full-data_" + data_type + "_train_ALL" + name_str + ".pt")        
+            ns_path = os.path.join(root, domain, "norm_stats",
+                                   f"{mode}_norm_stats_full-data_{training_experiment}_{data_type}_{gcm_name}_{period_training}{name_str}.pt")
             norm_stats = torch.load(ns_path)
         data_norm = data_norm.view(data_norm.shape[0], s1, s2)
         data = data_norm * norm_stats["std"] + norm_stats["mean"]
-    elif norm_method == "uniform":
-        if logit:
-            data_norm = torch.sigmoid(data_norm)
-        elif normal:
-            if isinstance(data_norm, torch.Tensor):
-                device = data_norm.device
-                data_norm = data_norm.cpu().numpy()
-                move_to_device = True
-            else:
-                move_to_device = False
-            data_norm = scipy.stats.norm.cdf(data_norm)
-            if move_to_device:
-                data_norm = torch.tensor(data_norm, device=device)
-        probs = torch.linspace(1, len_full_data, len_full_data)  / (len_full_data + 1)
-        if norm_stats is None and mode == "hr":    
-            ns_path = os.path.join(root, "norm_stats", mode + "_norm_stats_ecdf_matrix_" + data_type + "_train_" + "SUBSAMPLE" + name_str + ".pt")
-            norm_stats = torch.load(ns_path)
-        elif norm_stats is None and mode == "hr_avg":
-            ns_path = os.path.join(root, "norm_stats", "hr_avg8x8_norm_stats_ecdf_matrix_" + data_type + "_train_" + "SUBSAMPLE" + name_str + ".pt")
-            norm_stats = torch.load(ns_path)
-        
-        data = torch.zeros(data_norm.shape[0], s1, s2)
-        data_norm = data_norm.view(data_norm.shape[0], s1, s2)
-    
-        if not approx_unif:
-            for i in range(s1):
-                for j in range(s2):
-                    quantiles = norm_stats[:, i, j]
-                    data[:, i, j] = torch.tensor(np.interp(data_norm[:, i, j].detach().cpu().numpy(), probs, quantiles.detach().cpu().numpy()))
-        else:
-            probs_subsel = torch.cat([probs[:n_keep_vals], probs[n_keep_vals:-n_keep_vals:interp_step], probs[-n_keep_vals:]]) # subselect, but explicitly keep first and last 1000 values
-            for i in range(s1):
-                for j in range(s2):
-                    quantiles_subsel = torch.cat([norm_stats[:n_keep_vals, i, j], 
-                                                  norm_stats[n_keep_vals:-n_keep_vals:interp_step, i, j], 
-                                                  norm_stats[-n_keep_vals:, i, j]])
-                    data[:, i, j] = torch.tensor(np.interp(data_norm[:, i, j].detach().cpu().numpy(), probs_subsel, quantiles_subsel.detach().cpu().numpy()))
-            
-            
-    elif norm_method == "uniform_per_model":
-        data = unnormalise_unif_per_model_batch(data_norm, x=x, norm_method=norm_method,
-                                         mode=mode, data_type=data_type, sqrt_transform=sqrt_transform, logit=logit,
-                                         norm_stats_dict=norm_stats)
+
     else:
+        # Fallback: reshape only
         data = data_norm.view(data_norm.shape[0], s1, s2)
+
+    if 'ns_path' in locals():
+        print(f"loaded norm stats from: {ns_path}")
+        
     if data_type in ["pr", "sfcWind"] and sqrt_transform and final_square:
         data = data**2
     return data
-
 # -------------- NORMALISATION WITH UNIFORM PER MODEL -----------------------------------
 
 def unnormalise_unif_per_model(data_norm, mode = "hr", data_type = "pr", sqrt_transform = False, 
