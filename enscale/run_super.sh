@@ -1,8 +1,8 @@
 #!/bin/bash
-wd=1e-3
+wd=0
 lambda=0
 precip=constant
-splitresid=False
+splitresid=True
 
 if [ "$splitresid" = "False" ]; then
     split_flag="--not_split_residuals"
@@ -18,112 +18,64 @@ else
 fi
 echo "Submitting job: wd=$wd lambda=$lambda precip=$precip split=$splitresid"
 
-python -u train_only-super_multivariate.py \
-            --n_models 8 \
-            --out_act None \
-            --save_name '_dec${wd}_lam-mse${lambda}_split-resid${splitresid}' \
+CUDA_VISIBLE_DEVICES=0 python -u train_only-super_multivariate.py \
+            --out_act none \
+            --save_name "_dec${wd}_lam-mse${lambda}_split-resid${splitresid}_PAST-FUTURE-SPLIT" \
             --lambda_mse_loss ${lambda} \
             $split_flag \
             $mse_flag \
             --weight_decay ${wd} \
             --precip_zeros ${precip} \
             --nicolai_layers \
-            --num_neighbors_res 25 \
+            --num_neighbors_res 9 \
             --mlp_depth 2 \
             --noise_dim_mlp 0 \
             --hidden_dim 12 \
             --latent_dim 12 \
             --method eng_2step \
             --variables tasmax \
-            --num_epochs 500 \
-            --norm_method_input normalise_scalar \
+            --sqrt_transform_in \
+            --sqrt_transform_out \
+            --num_epochs 4000 \
+            --norm_method_input None \
             --norm_method_output normalise_pw \
             --kernel_size_hr 8 \
             --kernel_size_lr 16 \
-            --sample_every_nepoch 50 \
-            --save_model_every 50 \
+            --sample_every_nepoch 200 \
+            --save_model_every 200 \
             --variables_lr all \
-            --batch_size 512
+            --batch_size 1024 \
+            --domain ALPS \
+            --tr_te_split past_future \
+    > log_gpu0-tas-ALPS-01-pf.txt 2>&1 &
     
-python -u train_only-super_multivariate.py \
-            --n_models 8 \
-            --out_act None \
-            --save_name '_dec${wd}_lam-mse${lambda}_split-resid${splitresid}' \
+CUDA_VISIBLE_DEVICES=1 python -u train_only-super_multivariate.py \
+            --out_act none \
+            --save_name "_dec${wd}_lam-mse${lambda}_split-resid${splitresid}_PAST-FUTURE-SPLIT" \
             --lambda_mse_loss ${lambda} \
             $split_flag \
             $mse_flag \
             --weight_decay ${wd} \
             --precip_zeros ${precip} \
             --nicolai_layers \
-            --num_neighbors_res 25 \
+            --num_neighbors_res 9 \
             --mlp_depth 2 \
             --noise_dim_mlp 0 \
             --hidden_dim 12 \
             --latent_dim 12 \
             --method eng_2step \
-            --variables tasmax\
-            --num_epochs 500 \
-            --norm_method_input normalise_scalar \
+            --variables tasmax \
+            --sqrt_transform_in \
+            --sqrt_transform_out \
+            --num_epochs 4000 \
+            --norm_method_input None \
             --norm_method_output normalise_pw \
             --kernel_size_hr 4 \
             --kernel_size_lr 8 \
-            --sample_every_nepoch 50 \
-            --save_model_every 50 \
+            --sample_every_nepoch 200 \
+            --save_model_every 200 \
             --variables_lr all \
-            --batch_size 256 
-
-
-python -train_only-super_multivariate.py \
-        --n_models 8 \
-        --out_act None \
-        --save_name '_dec${wd}_lam-mse${lambda}_split-resid${splitresid}' \
-        --lambda_mse_loss ${lambda} \
-        $split_flag \
-        $mse_flag \
-        --weight_decay ${wd} \
-        --precip_zeros ${precip} \
-        --nicolai_layers \
-        --num_neighbors_res 25 \
-        --mlp_depth 2 \
-        --noise_dim_mlp 0 \
-        --hidden_dim 12 \
-        --latent_dim 12 \
-        --method eng_2step \
-        --variables tasmax \
-        --num_epochs 500 \
-        --norm_method_input normalise_scalar \
-        --norm_method_output normalise_pw \
-        --kernel_size_hr 2 \
-        --kernel_size_lr 4 \
-        --sample_every_nepoch 50 \
-        --save_model_every 50 \
-        --variables_lr pr \
-        --batch_size 128
-
-
-python train_only-super_multivariate.py \
-    --n_models 8 \
-    --out_act None \
-    --save_name '_dec${wd}_lam-mse${lambda}_split-resid${splitresid}' \
-    --lambda_mse_loss ${lambda} \
-    $split_flag \
-    $mse_flag \
-    --weight_decay ${wd} \
-    --precip_zeros ${precip} \
-    --nicolai_layers \
-    --num_neighbors_res 25 \
-    --mlp_depth 2 \
-    --noise_dim_mlp 0 \
-    --hidden_dim 12 \
-    --latent_dim 12 \
-    --method eng_2step \
-    --variables tasmax \
-    --num_epochs 500 \
-    --norm_method_input normalise_scalar \
-    --norm_method_output normalise_pw \
-    --kernel_size_hr 1 \
-    --kernel_size_lr 2 \
-    --sample_every_nepoch 50 \
-    --save_model_every 50 \
-    --variables_lr pr \
-    --batch_size 64 
+            --batch_size 512 \
+            --domain ALPS \
+            --tr_te_split past_future \
+    > log_gpu1-tas-ALPS-01-pf.txt 2>&1 &
