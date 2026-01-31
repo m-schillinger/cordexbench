@@ -252,7 +252,7 @@ if __name__ == '__main__':
         domain=args.domain,
         training_experiment=args.training_experiment,
         shuffle=True, batch_size=512,
-        tr_te_split = "random", test_size=1-args.tr_te_split_ratio,
+        tr_te_split = args.tr_te_split, test_size=1-args.tr_te_split_ratio,
         server=args.server,
         variables=args.variables, variables_lr=args.variables_lr,
         mode = "train",
