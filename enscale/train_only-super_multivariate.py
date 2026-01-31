@@ -4,6 +4,7 @@ import random
 import matplotlib.pyplot as plt
 from torchvision.utils import make_grid
 from modules import StoUNet, RankValModel, LinearModel, GCMCoarseRCMModel, MLPConvWrapper
+from modules_orog import *
 from modules_loc_variant import RectUpsampleWithResiduals, RectUpsampler
 from loss_func import energy_loss_two_sample, avg_constraint_per_var, energy_loss_multivariate_summed, norm_loss_multivariate_summed
 import torch.nn.functional as F
@@ -19,7 +20,7 @@ sys.path.append("..")
 
 
 def visual_sample(model, x, y, save_dir, norm_method=None, norm_stats=None, sqrt_transform=True, square_data=False, mode_unnorm = "hr", 
-                  one_hot_dim=None, logit=False, normal=False, fft=False, one_hot_in_super=False, conv=False, x_one_hot=None):
+                  one_hot_dim=None, logit=False, normal=False, fft=False, one_hot_in_super=False, conv=False, x_one_hot=None, orog=None):
     if not args.dropout:
         model.eval()
     with torch.no_grad():
@@ -47,9 +48,15 @@ def visual_sample(model, x, y, save_dir, norm_method=None, norm_stats=None, sqrt
             y_interm = gen - y_upsampled.view(gen.shape[0], -1)
             y_interm2 = gen2 - y_upsampled2.view(gen.shape[0], -1)
             plot_intermediate = True
-        elif args.nicolai_layers:
+        elif args.nicolai_layers and orog is None:
             gen, y_upsampled = model(x, return_mean=True)
             gen2, y_upsampled2 = model(x, return_mean=True)
+            y_interm = gen - y_upsampled.view(gen.shape[0], -1)
+            y_interm2 = gen2 - y_upsampled2.view(gen.shape[0], -1)
+            plot_intermediate = True
+        elif args.nicolai_layers and orog is not None:
+            gen, y_upsampled = model(x, orog=orog, return_mean=True)
+            gen2, y_upsampled2 = model(x, orog=orog, return_mean=True)
             y_interm = gen - y_upsampled.view(gen.shape[0], -1)
             y_interm2 = gen2 - y_upsampled2.view(gen.shape[0], -1)
             plot_intermediate = True
@@ -322,11 +329,11 @@ if __name__ == '__main__':
     # get run indices also here
     
     #### load data
-    train_loader, test_loader_in = get_data_cordexbench(
+    train_loader, test_loader_in, full_dataset = get_data_cordexbench(
         domain=args.domain,
         training_experiment=args.training_experiment,
-        shuffle=True, batch_size=512,
-        tr_te_split = "random", test_size=1-args.tr_te_split_ratio,
+        shuffle=True, batch_size=args.batch_size,
+        tr_te_split = args.tr_te_split, test_size=1-args.tr_te_split_ratio,
         server=args.server,
         variables=args.variables, variables_lr=args.variables_lr,
         mode = "train",
@@ -338,8 +345,11 @@ if __name__ == '__main__':
         normal=args.normal_transform,
         include_year=False,
         only_winter=False, stride_lr=None, padding_lr=None,
-        filter_outliers=False, precip_zeros="random",)
+        filter_outliers=False, precip_zeros="random",
+        return_dataset=True)
     print('#training batches:', len(train_loader))
+    
+    orog_data = full_dataset.orog.to(device)  # shape (128, 128)
     
     x_tr_eval, xc_tr_eval, y_tr_eval = next(iter(train_loader))
     x_tr_eval, xc_tr_eval, y_tr_eval = x_tr_eval[:args.n_visual].to(device), xc_tr_eval[:args.n_visual].to(device), y_tr_eval[:args.n_visual].to(device)
@@ -371,40 +381,41 @@ if __name__ == '__main__':
             
         folder = f"/r/scratch/users/mschillinger/data/cordexbench/{args.domain}"
         if args.kernel_size_hr == 1:
-            if args.norm_method_output == "normalise_pw":
-                #ns_path = os.path.join(args.data_dir, "norm_stats", f"{mode_unnorm}_norm_stats_pixelwise_" + args.variables[i] + "_train_ALL" + name_str + ".pt")
-                #norm_stats[args.variables[i]] = torch.load(ns_path, map_location=device)
-                data_type = args.variables[i]
-                
-                if args.training_experiment == 'ESD_pseudo_reality':
-                    period_training = '1961-1980'
-                elif args.training_experiment == 'Emulator_hist_future':
-                    period_training = '1961-1980_2080-2099'
-                else:
-                    raise ValueError('Provide a valid date')
-
-                # Set the GCM
-                if args.domain == 'ALPS':
-                    gcm_name = 'CNRM-CM5'
-                elif args.domain == 'NZ':
-                    gcm_name = 'ACCESS-CM2'
-                file_base = f"{args.training_experiment}_{data_type}_{gcm_name}_{period_training}{name_str}"
-
-                # torch.save({"mean": hr_mean_all, "std": hr_std_all},
-                #    os.path.join(root, domain, "norm_stats", f"hr_norm_stats_full-data_{file_base}.pt"))
-                ns_path = os.path.join(folder, "norm_stats", f"{mode_unnorm}_norm_stats_pixelwise_{file_base}.pt")
-                norm_stats[args.variables[i]] = torch.load(ns_path, map_location=device)
-            elif args.norm_method_output == "normalise_scalar":
-                ns_path = os.path.join(folder, "norm_stats", f"{mode_unnorm}_norm_stats_full-data_" + args.variables[i] + "_train_ALL" + name_str + ".pt")
-                norm_stats[args.variables[i]] = torch.load(ns_path, map_location=device)
-            elif args.norm_method_output == "uniform": #"hr_norm_stats_ecdf_matrix_" + data_type + "_train_" + "ALL" + name_str + ".pt")
-                name_str = ""
-                ns_path = os.path.join(folder, "norm_stats", f"{mode_unnorm}_norm_stats_ecdf_matrix_" + args.variables[i] + "_train_SUBSAMPLE" + name_str + ".pt")
-                norm_stats[args.variables[i]] = torch.load(ns_path, map_location=device)
+            norm_stats = {}
+            # derive GCM and training period consistent with dataset logic
+            if args.domain == "ALPS":
+                gcm_name = "CNRM-CM5"
+            elif args.domain == "NZ":
+                gcm_name = "ACCESS-CM2"
             else:
-                norm_stats[args.variables[i]] = None
+                raise ValueError("Unsupported domain for norm stats: " + str(args.domain))
+
+            if args.training_experiment == "ESD_pseudo_reality":
+                period_training = "1961-1980"
+            elif args.training_experiment == "Emulator_hist_future":
+                period_training = "1961-1980_2080-2099"
+            else:
+                raise ValueError("Unsupported training_experiment for norm stats: " + str(args.training_experiment))
+
+            for var in args.variables:
+                mode_unnorm = "hr"
+                name_str = "_sqrt" if (var in ["pr", "sfcWind"] and args.sqrt_transform_out) else ""
+                file_base = f"{args.training_experiment}_{var}_{gcm_name}_{period_training}{name_str}"
+
+                if args.norm_method_output == "normalise_pw" or args.norm_method_output == "scale_pw":
+                    ns_path = os.path.join(folder, "norm_stats", f"{mode_unnorm}_norm_stats_pixelwise_{file_base}.pt")
+                    norm_stats[var] = torch.load(ns_path, map_location=device)
+                elif args.norm_method_output == "normalise_scalar":
+                    ns_path = os.path.join(folder, "norm_stats", f"{mode_unnorm}_norm_stats_full-data_{file_base}.pt")
+                    norm_stats[var] = torch.load(ns_path, map_location=device)
+                else:
+                    norm_stats[var] = None
+                if norm_stats[var] is not None:
+                    print(f"Loaded norm stats for variable {var} from {ns_path}")
+
         else:
-            norm_stats[args.variables[i]] = None
+            for var in args.variables:
+                norm_stats[var] = None
         
     #### build model
     if args.method == 'eng_2step':
@@ -459,7 +470,7 @@ if __name__ == '__main__':
         elif args.conv and (args.kernel_size_lr // args.kernel_size_hr == 2):
             print("building 2x conv model")
             model = Generator2x(conv_dim=args.conv_dim, n_channels=n_channels, image_size=128//args.kernel_size_lr).to(device)
-        elif args.nicolai_layers:
+        elif args.nicolai_layers and not args.add_orography:
             if args.one_hot_in_super:
                 num_classes = 8
             else:
@@ -482,6 +493,51 @@ if __name__ == '__main__':
             
             if args.add_intermediate_loss:
                 assert args.latent_dim == len(args.variables)
+        
+        elif args.nicolai_layers and args.add_orography:
+            if args.one_hot_in_super:
+                num_classes = 8
+            else:
+                num_classes = 1
+            model = UpsampleWithOrography(128//args.kernel_size_lr, 
+                            128 // args.kernel_size_hr,
+                            n_features=len(args.variables),
+                            num_classes=num_classes,
+                            num_neighbors_orog=args.num_neighbors_res,
+                            num_neighbors_ups=args.num_neighbors_ups,
+                            num_neighbors_res=args.num_neighbors_res,
+                            orog_latent_dim=5,
+                            orog_input_dim=1,
+                            map_dim=args.latent_dim,
+                            noise_dim=5,
+                            mlp_hidden=args.hidden_dim,
+                            mlp_depth=args.mlp_depth,
+                            noise_dim_mlp=args.noise_dim_mlp,
+                            split_residuals=not args.not_split_residuals,
+                            orog_nonlinear=True,
+                            # out_act=args.out_act - TO DO integrate
+                            ).to(device)
+            
+            """
+            grid_size_lo,
+                 grid_size_hi,
+                 n_features=4,
+                 num_classes=1,
+                 num_classes_resid=1,
+                 num_neighbors_orog=25,
+                 num_neighbors_ups=25,
+                 num_neighbors_res=25,
+                 orog_latent_dim=2,
+                 orog_input_dim=1,
+                 map_dim=16,
+                 noise_dim=4,
+                 mlp_hidden=32,
+                 mlp_depth=2,
+                 shared_noise=False, 
+                 noise_dim_mlp=None, 
+                 split_residuals=True,
+                 orog_nonlinear=False):
+            """
             
         else:
             print("building dense MLP model")
@@ -558,9 +614,12 @@ if __name__ == '__main__':
             elif args.nicolai_layers and args.add_mse_loss:
                 gen1, y_upsampled = model(xc, cls_ids=cls_ids, return_mean=True)
                 gen2, y_upsampled2 = model(xc, cls_ids=cls_ids, return_mean=True)
-            elif args.nicolai_layers:
+            elif args.nicolai_layers and not args.add_orography:
                 gen1 = model(xc, cls_ids=cls_ids)
                 gen2 = model(xc, cls_ids=cls_ids)
+            elif args.nicolai_layers and args.add_orography:
+                gen1 = model(xc, orog=orog_data.expand(xc.shape[0], -1), cls_ids=cls_ids)
+                gen2 = model(xc, orog=orog_data.expand(xc.shape[0], -1), cls_ids=cls_ids)
             else:
                 gen1 = model(add_one_hot(xc, one_hot_in_super=args.one_hot_in_super, conv=(args.conv or args.conv_concat), x=x, one_hot_dim=one_hot_dim))
                 gen2 = model(add_one_hot(xc, one_hot_in_super=args.one_hot_in_super, conv=(args.conv or args.conv_concat), x=x, one_hot_dim=one_hot_dim))
@@ -717,9 +776,12 @@ if __name__ == '__main__':
                         elif args.nicolai_layers and args.double_linear and args.add_intermediate_loss:
                             gen1, _, y_interm = model(xc_te, cls_ids=cls_ids, return_latent=True)
                             gen2, _, y_interm2 = model(xc_te, cls_ids=cls_ids, return_latent=True)
-                        elif args.nicolai_layers:
+                        elif args.nicolai_layers and not args.add_orography:
                             gen1 = model(xc_te, cls_ids=cls_ids)
                             gen2 = model(xc_te, cls_ids=cls_ids)
+                        elif args.nicolai_layers and args.add_orography:
+                            gen1 = model(xc_te, orog=orog_data.expand(xc_te.shape[0], -1), cls_ids=cls_ids)
+                            gen2 = model(xc_te, orog=orog_data.expand(xc_te.shape[0], -1), cls_ids=cls_ids)
                         else:
                             gen1 = model(add_one_hot(xc_te, one_hot_in_super=args.one_hot_in_super, conv=(args.conv or args.conv_concat), x=x_te, one_hot_dim=one_hot_dim))
                             gen2 = model(add_one_hot(xc_te, one_hot_in_super=args.one_hot_in_super, conv=(args.conv or args.conv_concat), x=x_te, one_hot_dim=one_hot_dim))
@@ -826,48 +888,41 @@ if __name__ == '__main__':
             visual_sample(model, xc_tr_eval, y_tr_eval, save_dir=save_dir + f'img_{epoch_idx + 1}_tr_loss-scale_super', 
                           norm_method=None, norm_stats=None, square_data=False, sqrt_transform=args.sqrt_transform_out,
                           logit=False, normal = False, fft=args.fft, mode_unnorm=mode_unnorm,
-                          one_hot_dim=one_hot_dim, conv=(args.conv or args.conv_concat), x_one_hot=x_tr_eval, one_hot_in_super=args.one_hot_in_super)
+                          one_hot_dim=one_hot_dim, conv=(args.conv or args.conv_concat), x_one_hot=x_tr_eval, one_hot_in_super=args.one_hot_in_super,
+                          orog=orog_data.expand(xc_tr_eval.shape[0], -1) if args.add_orography else None)
             visual_sample(model, xc_te_eval, y_te_eval, save_dir=save_dir + f'img_{epoch_idx + 1}_te_loss-scale_super', 
                           norm_method=None, norm_stats=None, square_data=False, sqrt_transform=args.sqrt_transform_out,
                           logit=False, normal = False, fft=args.fft, mode_unnorm=mode_unnorm,
-                          one_hot_dim=one_hot_dim, conv=(args.conv or args.conv_concat), x_one_hot=x_tr_eval, one_hot_in_super=args.one_hot_in_super)
+                          one_hot_dim=one_hot_dim, conv=(args.conv or args.conv_concat), x_one_hot=x_tr_eval, one_hot_in_super=args.one_hot_in_super,
+                          orog=orog_data.expand(xc_te_eval.shape[0], -1) if args.add_orography else None)
             
             if args.kernel_size_hr == 1: # if HR target is not coarsened also
-                if args.norm_method_output == "uniform" and args.logit_transform:
-                    # in this case, also visualise on uniformly transformed scale
-                    visual_sample(model, xc_tr_eval, y_tr_eval, save_dir=save_dir + f'img_{epoch_idx + 1}_tr_unif-scale_super', 
-                            norm_method=None, norm_stats=None, square_data=False, sqrt_transform=args.sqrt_transform_out,
-                            logit = True, fft=args.fft,
-                            one_hot_dim=one_hot_dim, conv=(args.conv or args.conv_concat), x_one_hot=x_tr_eval, one_hot_in_super=args.one_hot_in_super)
-                    
-                    visual_sample(model, xc_te_eval, y_te_eval, save_dir=save_dir + f'img_{epoch_idx + 1}_te_unif-scale_super', 
-                            norm_method=None, norm_stats=None, square_data=False, sqrt_transform=args.sqrt_transform_out,
-                            logit = True, fft=args.fft,
-                            one_hot_dim=one_hot_dim, conv=(args.conv or args.conv_concat), x_one_hot=x_tr_eval, one_hot_in_super=args.one_hot_in_super)
                 
                 # super model on raw data scale
                 visual_sample(model, xc_tr_eval, y_tr_eval, save_dir=save_dir + f'img_{epoch_idx + 1}_tr_super', 
                             norm_method=args.norm_method_output, norm_stats=norm_stats,
                         square_data=False, sqrt_transform=args.sqrt_transform_out,
                         logit = args.logit_transform, normal=args.normal_transform, fft=args.fft,
-                        one_hot_dim=one_hot_dim, conv=(args.conv or args.conv_concat), x_one_hot=x_tr_eval, one_hot_in_super=args.one_hot_in_super)
+                        one_hot_dim=one_hot_dim, conv=(args.conv or args.conv_concat), x_one_hot=x_tr_eval, one_hot_in_super=args.one_hot_in_super,
+                        orog=orog_data.expand(xc_tr_eval.shape[0], -1) if args.add_orography else None)
                 visual_sample(model, xc_te_eval, y_te_eval, save_dir=save_dir + f'img_{epoch_idx + 1}_te_super', 
                             norm_method=args.norm_method_output, norm_stats=norm_stats,
                     square_data=False, sqrt_transform=args.sqrt_transform_out,
                     logit = args.logit_transform, normal=args.normal_transform, fft=args.fft,
-                    one_hot_dim=one_hot_dim, conv=(args.conv or args.conv_concat), x_one_hot=x_tr_eval, one_hot_in_super=args.one_hot_in_super)
+                    one_hot_dim=one_hot_dim, conv=(args.conv or args.conv_concat), x_one_hot=x_tr_eval, one_hot_in_super=args.one_hot_in_super,
+                    orog=orog_data.expand(xc_te_eval.shape[0], -1) if args.add_orography else None)
             
-            losses_to_img(save_dir, f"log.txt", "full", "_full")
-            losses_to_img(save_dir, f"log_super.txt", "sup", "_super")
-            losses_to_img(save_dir, f"log_raw.txt", "raw", "_raw")
-            losses_to_img(save_dir, f"log_avc.txt", "avc", "_avc")
+            losses_to_img(save_dir, f"log.txt", "full", "_full", min_epoch = 10)
+            losses_to_img(save_dir, f"log_super.txt", "sup", "_super", min_epoch = 10)
+            losses_to_img(save_dir, f"log_raw.txt", "raw", "_raw", min_epoch = 10)
+            losses_to_img(save_dir, f"log_avc.txt", "avc", "_avc", min_epoch = 10)
             
             # MULTIVARIATE 
             # only on loss scale          
-            trues, samples = get_eval_samples(model.module, current_test_loader, mode_unnorm=mode_unnorm, norm_stats=None, input_mode = "xc", output_mode = "y", norm_method=None,
-                                              one_hot_dim=one_hot_dim, conv=(args.conv or args.conv_concat), one_hot_in_super=args.one_hot_in_super)
-            for i in range(len(args.variables)):
-                plot_rh(trues[:, i, :, :], samples[:, i, :, :, :], epoch_idx, save_dir, file_suffix=f"_full-model-var-{args.variables[i]}")
+            #trues, samples = get_eval_samples(model.module, current_test_loader, mode_unnorm=mode_unnorm, norm_stats=None, input_mode = "xc", output_mode = "y", norm_method=None,
+            #                                  one_hot_dim=one_hot_dim, conv=(args.conv or args.conv_concat), one_hot_in_super=args.one_hot_in_super)
+            #for i in range(len(args.variables)):
+            #    plot_rh(trues[:, i, :, :], samples[:, i, :, :, :], epoch_idx, save_dir, file_suffix=f"_full-model-var-{args.variables[i]}")
             
         if epoch_idx == 0 or (epoch_idx + 1) % args.save_model_every == 0:# and i >= 30:
             torch.save(model.module.state_dict(), save_dir + f"model_{epoch_idx}.pt")
