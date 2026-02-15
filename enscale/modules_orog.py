@@ -154,6 +154,97 @@ class OrographyLatentNonLinear(LocalUpsamplingBase):
                 x = self.out_act(x)
         return x
 
+
+class OrographyLatentNonLinearConv(LocalUpsamplingBase):
+    """Locally connected MLP of arbitrary depth, with per-pixel parameters."""
+    def __init__(self, 
+                 height, 
+                 width, 
+                 num_neighbors, 
+                 map_dim,
+                 mlp_hidden, 
+                 mlp_depth, 
+                 num_classes=1, 
+                 activation="relu", 
+                 out_act=None):
+        """
+        Args:
+            height        : int
+            width         : int
+            num_neighbors : int : number of local inputs per pixel
+            layer_dims    : list[int] : hidden layer sizes + output size, e.g. [32, 16, 8]
+            num_classes   : int : optional
+        """
+        super().__init__()
+        self.height = height
+        self.width = width
+        self.npix = height * width
+        self.k = num_neighbors
+        self.num_classes = num_classes
+        self.map_dim = map_dim
+        if activation == "relu":
+            self.activation = nn.ReLU()
+        elif activation == "sigmoid":
+            self.activation = nn.Sigmoid()
+        else:
+            raise ValueError(f"Unsupported activation: {activation}")
+        if out_act == "relu":
+            self.out_act = nn.ReLU()
+        elif out_act == "sigmoid":
+            self.out_act = nn.Sigmoid()
+        else:
+            self.out_act = None
+            
+        # layer_dims = [h1, h2, ..., out_dim]
+        dims = [num_neighbors] + [mlp_hidden] * (mlp_depth - 1) + [map_dim]
+        self.num_layers = mlp_depth
+
+        # dynamically create weights/biases
+        for l in range(self.num_layers):
+            in_dim = dims[l]
+            out_dim = dims[l+1]
+            if num_classes > 1:
+                W = nn.Parameter(torch.empty(num_classes, out_dim, in_dim))
+                b = nn.Parameter(torch.zeros(num_classes, out_dim))
+            else:
+                W = nn.Parameter(torch.empty(out_dim, in_dim))
+                b = nn.Parameter(torch.zeros(out_dim))
+            nn.init.xavier_uniform_(W)
+
+            # register them under unique names
+            self.register_parameter(f"W{l+1}", W)
+            self.register_parameter(f"b{l+1}", b)
+
+        # neighbor lookup (same as before)
+        radius = int((num_neighbors ** 0.5 - 1) // 2)
+        self.register_buffer("neighbor_indices", self._compute_neighbors_adjusted(radius=radius))
+
+    def forward(self, orog_in, cls_ids=None):
+        B = orog_in.shape[0]
+        y_flat = orog_in.view(B, self.npix)
+        gather_y = y_flat[:, self.neighbor_indices]  # (B, npix, k)
+        x = gather_y
+
+        for l in range(self.num_layers):
+            W = getattr(self, f"W{l+1}")
+            b = getattr(self, f"b{l+1}")
+
+            if self.num_classes > 1 and cls_ids is not None:
+                W_ = W[cls_ids].unsqueeze(1).expand(B, self.npix, W.shape[1], W.shape[2])  # (B, npix, out_dim, in_dim)
+                b_ = b[cls_ids].unsqueeze(1).expand(B, self.npix, b.shape[1])  # (B, npix, out_dim)
+            else:
+                W_ = W.unsqueeze(0).expand(self.npix, W.shape[0], W.shape[1]) # W_ have shape (out_dim, in_dim)
+                b_ = b.unsqueeze(0).expand(self.npix, b.shape[0])  # (out_dim)
+            if self.num_classes > 1 and cls_ids is not None:
+                x = torch.einsum("bpi,bpoi->bpo", x, W_) + b_
+            else:    
+                x = torch.einsum("bpi,poi->bpo", x, W_) + b_
+            if l < self.num_layers - 1:
+                x = self.activation(x)
+            if l == self.num_layers - 1 and self.out_act is not None:
+                x = self.out_act(x)
+        return x
+
 class OrographyLatent(LocalUpsamplingBase):
     """ Module class for learning residuals on a high-resolution grid
         using local neighborhoods and a shared MLP.
@@ -391,7 +482,8 @@ class LocalResiduals(LocalUpsamplingBase):
                  mlp_depth, 
                  shared_noise=False, 
                  noise_dim_mlp=None, 
-                 num_classes=1):
+                 num_classes=1,
+                 out_act=None):
         super().__init__()
         self.height = height
         self.width = width
@@ -423,6 +515,8 @@ class LocalResiduals(LocalUpsamplingBase):
                 out_dim = mlp_hidden if i < mlp_depth - 1 else n_features
                 mlp_layers.append(nn.Linear(in_dim, out_dim))
                 if i < mlp_depth - 1:
+                    mlp_layers.append(nn.ReLU())
+                elif out_act == "relu":
                     mlp_layers.append(nn.ReLU())
                 in_dim = out_dim
             self.mlp = nn.Sequential(*mlp_layers)
@@ -540,7 +634,9 @@ class UpsampleWithOrography(nn.Module):
                  shared_noise=False, 
                  noise_dim_mlp=None, 
                  split_residuals=True,
-                 orog_nonlinear=False):
+                 orog_nonlinear=False,
+                 orog_conv=False,
+                 out_act=None):
         super().__init__()
 
         self.noise_dim = noise_dim
@@ -554,7 +650,19 @@ class UpsampleWithOrography(nn.Module):
              mlp_depth=None, 
              num_classes=num_classes
             )
-        else: 
+        elif orog_conv: 
+            self.orography_latent = OrographyLatentNonLinearConv(
+                height=grid_size_hi,
+                width=grid_size_hi,
+                num_neighbors=num_neighbors_orog,
+                map_dim=orog_latent_dim,
+                mlp_hidden=12,
+                mlp_depth=3,
+                num_classes=num_classes,
+                activation="relu",
+                out_act=None
+            )
+        else:
             self.orography_latent = OrographyLatentNonLinear(
                 height=grid_size_hi,
                 width=grid_size_hi,
@@ -586,7 +694,8 @@ class UpsampleWithOrography(nn.Module):
             mlp_depth=mlp_depth,
             shared_noise=shared_noise,
             noise_dim_mlp=noise_dim_mlp,
-            num_classes=num_classes_resid
+            num_classes=num_classes_resid,
+            out_act=out_act
         )
         self.split_residuals = split_residuals
 

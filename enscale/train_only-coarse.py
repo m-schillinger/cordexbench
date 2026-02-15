@@ -4,7 +4,7 @@ import os
 import random
 import matplotlib.pyplot as plt
 from torchvision.utils import make_grid
-from modules import StoUNet, StoEncNet, LinearModel, MultipleStoUNetWrapper, MeanResidualWrapper
+from modules import StoUNet, LinearModel, MultipleStoUNetWrapper, MeanResidualWrapper
 from loss_func import energy_loss_two_sample, norm_loss_multivariate_summed
 
 from config import get_config
@@ -263,8 +263,9 @@ if __name__ == '__main__':
         logit=args.logit_transform,
         normal=args.normal_transform,
         include_year=False,
-        only_winter=False, stride_lr=None, padding_lr=None,
-        filter_outliers=False, precip_zeros="random",)
+        stride_lr=None, padding_lr=None,
+        remove_climate_change_trend=args.remove_climate_change_trend,
+        alpha_subtract_linear=args.alpha_subtract_linear,)
 
     print('#training batches:', len(train_loader))
     
@@ -402,7 +403,8 @@ if __name__ == '__main__':
                         add_bn=args.bn, out_act=args.out_act, resblock=args.mlp, noise_std=args.noise_std,
                         preproc_layer=args.preproc_layer,
                         input_dims_for_preproc=input_dims_for_preproc,
-                        preproc_dim=args.preproc_dim, layer_shrinkage=args.layer_shrinkage).to(device)
+                        preproc_dim=args.preproc_dim, layer_shrinkage=args.layer_shrinkage,
+                        bottleneck_dim=args.bottleneck_dim).to(device)
             
             # BEFORE
             #if args.kernel_size_lr == 16 or args.kernel_size_lr == 32 or args.kernel_size_lr == 64:
@@ -887,10 +889,10 @@ if __name__ == '__main__':
             #   plot_rh(trues, samples, epoch_idx, save_dir, file_suffix="_raw-scale_super")
                 
             # ADDED TEMPORARILY
-            for i in range(len(args.variables)):
-                avg_daily_var = torch.var(samples[:, i, :, :, :], dim=-1).mean(dim=0)
-                plt.imshow(avg_daily_var.cpu().numpy()); plt.axis('off');
-                plt.savefig(save_dir + f"var-{args.variables[i]}_daily-var_{epoch_idx}.png", bbox_inches="tight", pad_inches=0, dpi=300); plt.close()
+            # for i in range(len(args.variables)):
+            #    avg_daily_var = torch.var(samples[:, i, :, :, :], dim=-1).mean(dim=0)
+            #    plt.imshow(avg_daily_var.cpu().numpy()); plt.axis('off');
+            #    plt.savefig(save_dir + f"var-{args.variables[i]}_daily-var_{epoch_idx}.png", bbox_inches="tight", pad_inches=0, dpi=300); plt.close()
 
         if epoch_idx == 0 or (epoch_idx + 1) % args.save_model_every == 0:# and i >= 30:
             torch.save(model.state_dict(), save_dir + f"model_{epoch_idx}.pt")

@@ -344,9 +344,10 @@ if __name__ == '__main__':
         logit=args.logit_transform,
         normal=args.normal_transform,
         include_year=False,
-        only_winter=False, stride_lr=None, padding_lr=None,
-        filter_outliers=False, precip_zeros="random",
-        return_dataset=True)
+        stride_lr=None, padding_lr=None,
+        return_dataset=True,
+        remove_climate_change_trend=args.remove_climate_change_trend,
+        alpha_subtract_linear=args.alpha_subtract_linear,)
     print('#training batches:', len(train_loader))
     
     orog_data = full_dataset.orog.to(device)  # shape (128, 128)
@@ -385,7 +386,7 @@ if __name__ == '__main__':
             # derive GCM and training period consistent with dataset logic
             if args.domain == "ALPS":
                 gcm_name = "CNRM-CM5"
-            elif args.domain == "NZ":
+            elif args.domain == "NZ" or args.domain == 'SA':
                 gcm_name = "ACCESS-CM2"
             else:
                 raise ValueError("Unsupported domain for norm stats: " + str(args.domain))
@@ -487,7 +488,8 @@ if __name__ == '__main__':
                             mlp_depth=args.mlp_depth,
                             noise_dim_mlp=args.noise_dim_mlp,
                             double_linear=args.double_linear,
-                            split_residuals=not args.not_split_residuals
+                            split_residuals=not args.not_split_residuals,
+                            out_act=args.out_act,
                             ).to(device)
             # change to one hot dim later
             
@@ -506,7 +508,7 @@ if __name__ == '__main__':
                             num_neighbors_orog=args.num_neighbors_res,
                             num_neighbors_ups=args.num_neighbors_ups,
                             num_neighbors_res=args.num_neighbors_res,
-                            orog_latent_dim=5,
+                            orog_latent_dim=3,
                             orog_input_dim=1,
                             map_dim=args.latent_dim,
                             noise_dim=5,
@@ -515,7 +517,8 @@ if __name__ == '__main__':
                             noise_dim_mlp=args.noise_dim_mlp,
                             split_residuals=not args.not_split_residuals,
                             orog_nonlinear=True,
-                            # out_act=args.out_act - TO DO integrate
+                            orog_conv=args.orog_conv,
+                            out_act=args.out_act,
                             ).to(device)
             
             """
@@ -693,7 +696,7 @@ if __name__ == '__main__':
             s2_tr_s += losses[2].item()
             # loss_tr_patch += losses_patch[0].item()
                 
-            if args.kernel_size_hr == 1 and (epoch_idx == 0 or ((epoch_idx + 1) % (args.print_every_nepoch * 10) == 0)):
+            if args.kernel_size_hr == 1 and (epoch_idx == 0 or ((epoch_idx + 1) % (args.print_every_nepoch * 10) == 0)) and args.norm_method_output != "subtract_linear":
                 if n_batches_raw < 3:    
                     n_batches_raw +=1
                     with torch.no_grad():
@@ -824,7 +827,7 @@ if __name__ == '__main__':
                         s2_te_s += losses[2].item()
                         n_te_batches += 1
                         
-                        if args.kernel_size_hr == 1:
+                        if args.kernel_size_hr == 1 and args.norm_method_output != "subtract_linear":
                             for i in range(len(args.variables)):
                                 if len(y_te.shape) == 3:
                                     y_var = y_te[:, i, :]
@@ -896,8 +899,8 @@ if __name__ == '__main__':
                           one_hot_dim=one_hot_dim, conv=(args.conv or args.conv_concat), x_one_hot=x_tr_eval, one_hot_in_super=args.one_hot_in_super,
                           orog=orog_data.expand(xc_te_eval.shape[0], -1) if args.add_orography else None)
             
-            if args.kernel_size_hr == 1: # if HR target is not coarsened also
-                
+            if args.kernel_size_hr == 1 and args.norm_method_output != "subtract_linear": # if HR target is not coarsened also
+                print("Visualising on raw data scale")
                 # super model on raw data scale
                 visual_sample(model, xc_tr_eval, y_tr_eval, save_dir=save_dir + f'img_{epoch_idx + 1}_tr_super', 
                             norm_method=args.norm_method_output, norm_stats=norm_stats,

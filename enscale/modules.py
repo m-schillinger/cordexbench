@@ -345,11 +345,17 @@ class StoUNet(StoNetBase):
     def __init__(self, in_dim, out_dim, num_layer=2, hidden_dim=100, 
                  noise_dim=100, add_bn=True, out_act=None, resblock=False, noise_std=1,
                  preproc_layer=False, n_vars=5, time_dim=6, val_dim=None, rank_dim=720, preproc_dim=20,
-                 layer_shrinkage=16, extra_input_dim=0, dropout=False, input_dims_for_preproc=None):
+                 layer_shrinkage=16, extra_input_dim=0, dropout=False, input_dims_for_preproc=None,
+                 bottleneck_dim=None):
         super().__init__(noise_dim)
         self.in_dim = in_dim
         self.out_dim = out_dim
         self.hidden_dim = hidden_dim
+        if bottleneck_dim is None:
+            bottleneck_dim = hidden_dim
+        else:
+            bottleneck_dim = bottleneck_dim
+            
         self.noise_dim = noise_dim
         self.add_bn = add_bn
         self.noise_std = noise_std
@@ -383,87 +389,40 @@ class StoUNet(StoNetBase):
                 in_dim = preproc_dim * len(input_dims_for_preproc)
                 self.in_dim = in_dim
             else:
-                pass
-                """ # remove if not needed
-                self.val_dim = val_dim
-                self.time_dim = time_dim
-                self.rank_dim = rank_dim
-                self.n_vars = n_vars
-                if val_dim is None:
-                    one_hot_dim = in_dim - n_vars*720 - time_dim - extra_input_dim
-                    self.one_hot_dim = one_hot_dim
-                    self.extra_input_dim = extra_input_dim
-                    if one_hot_dim > 0 and extra_input_dim > 0:
-                        self.preproc_layers =  nn.ModuleList([ 
-                            nn.Sequential(nn.Linear(rank_dim,preproc_dim), nn.ReLU(inplace=True)) for i in range(n_vars)] + [
-                            nn.Sequential(nn.Linear(time_dim,preproc_dim), nn.ReLU(inplace=True)),
-                            nn.Sequential(nn.Linear(one_hot_dim,preproc_dim), nn.ReLU(inplace=True)),
-                            nn.Sequential(nn.Linear(extra_input_dim,preproc_dim), nn.ReLU(inplace=True))])
-                        in_dim = preproc_dim * (n_vars + 3)
-                    elif one_hot_dim > 0:
-                        self.preproc_layers =  nn.ModuleList([ 
-                            nn.Sequential(nn.Linear(rank_dim,preproc_dim), nn.ReLU(inplace=True)) for i in range(n_vars)] + [
-                            nn.Sequential(nn.Linear(time_dim,preproc_dim), nn.ReLU(inplace=True)),
-                            nn.Sequential(nn.Linear(one_hot_dim,preproc_dim), nn.ReLU(inplace=True))])
-                        in_dim = preproc_dim * (n_vars + 2)
-                    elif extra_input_dim > 0:
-                        self.preproc_layers =  nn.ModuleList([ 
-                            nn.Sequential(nn.Linear(rank_dim,preproc_dim), nn.ReLU(inplace=True)) for i in range(n_vars)] + [
-                            nn.Sequential(nn.Linear(time_dim,preproc_dim), nn.ReLU(inplace=True)),
-                            nn.Sequential(nn.Linear(extra_input_dim,preproc_dim), nn.ReLU(inplace=True))])
-                        in_dim = preproc_dim * (n_vars + 2)
-                    else:
-                        self.preproc_layers =  nn.ModuleList([ 
-                            nn.Sequential(nn.Linear(rank_dim,preproc_dim), nn.ReLU(inplace=True)) for i in range(n_vars)] + [
-                            nn.Sequential(nn.Linear(time_dim,preproc_dim), nn.ReLU(inplace=True))])
-                        in_dim = preproc_dim * (n_vars + 1)
-                    self.in_dim = in_dim
-                else:
-                    if extra_input_dim > 0:
-                        raise NotImplementedError("Extra input dimension not implemented yet.")
-                    one_hot_dim = in_dim - n_vars*720 - time_dim - 5*val_dim
-                    self.one_hot_dim = one_hot_dim
-                    # pdb.set_trace()
-                    if one_hot_dim > 0:
-                        self.preproc_layers =  nn.ModuleList([
-                            RankValueLayer(rank_dim=rank_dim, val_dim=val_dim, preproc_rk_dim=preproc_dim, preproc_val_dim=preproc_dim//2) for i in range(n_vars)] + [
-                            nn.Sequential(nn.Linear(time_dim,preproc_dim), nn.ReLU(inplace=True)),
-                            nn.Sequential(nn.Linear(one_hot_dim,preproc_dim), nn.ReLU(inplace=True)),
-                        ])
-                    else:
-                        self.preproc_layers =  nn.ModuleList([
-                            RankValueLayer(rank_dim=rank_dim, val_dim=val_dim, preproc_rk_dim=preproc_dim, preproc_val_dim=preproc_dim//2) for i in range(n_vars)] + [
-                            nn.Sequential(nn.Linear(time_dim,preproc_dim), nn.ReLU(inplace=True)),
-                        ])
-                    in_dim = preproc_dim * (n_vars + 2) + preproc_dim//2 * n_vars
-                    self.in_dim = in_dim
-                """
+                raise ValueError("If preproc_layer is True, input_dims_for_preproc must be provided.")
+                
             
         if self.resblock: 
             if self.num_blocks == 1:
                 if dropout:
                     raise NotImplementedError("Dropout not implemented yet.")
-                self.net = StoResBlock_ExternalNoise(dim=in_dim, hidden_dim=hidden_dim, out_dim=out_dim, 
+                self.net = StoResBlock_ExternalNoise(dim=in_dim, hidden_dim=bottleneck_dim, out_dim=out_dim, 
                                        noise_dim=noise_dim, add_bn=add_bn, out_act=out_act, noise_std=noise_std, dropout=dropout)
+            elif self.num_blocks == 2:
+                self.input_layer = StoResBlock_ExternalNoise(dim=in_dim, hidden_dim=bottleneck_dim, out_dim=out_dim // layer_shrinkage, 
+                                           noise_dim=noise_dim, add_bn=add_bn, out_act="relu", noise_std=noise_std, dropout=dropout)
+                
+                if layer_shrinkage > 3:
+                    hd = out_dim // (layer_shrinkage // 4)
+                elif layer_shrinkage > 1:
+                    hd = out_dim // (layer_shrinkage // 2)
+                else:
+                    hd = out_dim
+                self.out_layer = StoResBlock_ExternalNoise(dim=out_dim // layer_shrinkage, hidden_dim = hd, out_dim=out_dim, 
+                                             noise_dim=noise_dim, add_bn=add_bn, out_act=out_act, noise_std=noise_std, dropout=dropout, dropout_final=False) # output layer with concatenated noise
             else:
-                if self.num_blocks > 2:
-                    self.input_layer = StoResBlock_ExternalNoise(dim=in_dim, hidden_dim=hidden_dim, out_dim=hidden_dim, 
-                                               noise_dim=noise_dim, add_bn=add_bn, out_act="relu", noise_std=noise_std, dropout=dropout)
-                else:
-                    self.input_layer = StoResBlock_ExternalNoise(dim=in_dim, hidden_dim=hidden_dim, out_dim=out_dim // layer_shrinkage, 
-                                               noise_dim=noise_dim, add_bn=add_bn, out_act="relu", noise_std=noise_std, dropout=dropout)
-                if self.num_blocks > 2:
-                    self.small_inter_layer = nn.Sequential(*[StoResBlock_ExternalNoise(dim=hidden_dim, noise_dim=noise_dim, add_bn=add_bn, 
-                                                                                       out_act="relu", dropout=dropout)]*(self.num_blocks - 3))
-                    self.second_to_last = StoResBlock_ExternalNoise(dim=hidden_dim, hidden_dim=hidden_dim, out_dim=out_dim // layer_shrinkage,
-                                                    noise_dim=noise_dim, add_bn=add_bn, out_act="relu", noise_std=noise_std, dropout=dropout)
-                    
-                    layers = list(self.small_inter_layer.children()) + [self.second_to_last]
-                    self.inter_layer = nn.Sequential(*layers)
+                self.input_layer = StoResBlock_ExternalNoise(dim=in_dim, hidden_dim=bottleneck_dim, out_dim=hidden_dim, 
+                                      noise_dim=noise_dim, add_bn=add_bn, out_act="relu", noise_std=noise_std, dropout=dropout)
                 
-                else:
-                    self.inter_layer = nn.Sequential(nn.Identity())
+                self.small_inter_layer = nn.Sequential(*[StoResBlock_ExternalNoise(dim=hidden_dim, noise_dim=noise_dim, add_bn=add_bn, 
+                                                                                    out_act="relu", dropout=dropout)]*(self.num_blocks - 3))
+
+                self.second_to_last = StoResBlock_ExternalNoise(dim=hidden_dim, hidden_dim=hidden_dim, out_dim=out_dim // layer_shrinkage,
+                                                noise_dim=noise_dim, add_bn=add_bn, out_act="relu", noise_std=noise_std, dropout=dropout)
                 
+                layers = list(self.small_inter_layer.children()) + [self.second_to_last]
+                self.inter_layer = nn.Sequential(*layers)
+               
                 if layer_shrinkage > 3:
                     hd = out_dim // (layer_shrinkage // 4)
                 elif layer_shrinkage > 1:
@@ -537,32 +496,6 @@ class StoUNet(StoNetBase):
             else:
                 
                 pass 
-                """
-                # remove if not needed
-                if self.val_dim is None:
-                    variable_dim = self.rank_dim
-                else:
-                    variable_dim = self.rank_dim + self.val_dim
-                # preproc layer is deterministic, so no noise
-                assert x.shape[-1] == variable_dim * self.n_vars + self.time_dim + self.one_hot_dim + self.extra_input_dim
-                if self.one_hot_dim > 0 and self.extra_input_dim > 0:
-                    x = torch.cat([layer(x[:,i*variable_dim:(i+1)*variable_dim]) for i, layer in enumerate(self.preproc_layers[0:self.n_vars])] +
-                                [self.preproc_layers[self.n_vars](x[:, (variable_dim*self.n_vars):(variable_dim*self.n_vars+self.time_dim)])] + 
-                                [self.preproc_layers[self.n_vars+1](x[:, (variable_dim*self.n_vars+self.time_dim):(variable_dim*self.n_vars+self.time_dim+self.one_hot_dim)])] +
-                                [self.preproc_layers[self.n_vars+2](x[:, -self.extra_input_dim:])], dim=1)
-                elif self.one_hot_dim > 0:
-                    x = torch.cat([layer(x[:,i*variable_dim:(i+1)*variable_dim]) for i, layer in enumerate(self.preproc_layers[0:self.n_vars])] +
-                                [self.preproc_layers[self.n_vars](x[:, (variable_dim*self.n_vars):(variable_dim*self.n_vars+self.time_dim)])] + 
-                                [self.preproc_layers[self.n_vars+1](x[:, (variable_dim*self.n_vars+self.time_dim):])], dim=1)
-                elif self.extra_input_dim > 0:
-                    x = torch.cat([layer(x[:,i*variable_dim:(i+1)*variable_dim]) for i, layer in enumerate(self.preproc_layers[0:self.n_vars])] +
-                                [self.preproc_layers[self.n_vars](x[:, (variable_dim*self.n_vars):(variable_dim*self.n_vars+self.time_dim)])] + 
-                                [self.preproc_layers[self.n_vars+1](x[:, self.extra_input_dim:])], dim=1)            
-                else:
-                    pdb.set_trace()
-                    x = torch.cat([layer(x[:,i*variable_dim:(i+1)*variable_dim]) for i, layer in enumerate(self.preproc_layers[0:self.n_vars])] +
-                                [self.preproc_layers[self.n_vars](x[:, (variable_dim*self.n_vars):(variable_dim*self.n_vars+self.time_dim)])], dim=1)
-                """
         if eps is None: # no noise supplied, just sample noise internally
             if self.num_blocks == 1:
                 return self.net(x)
@@ -581,397 +514,8 @@ class StoUNet(StoNetBase):
                 n_inter_layers = len(self.inter_layer)               
                 x = torch.cat([self.inter_layer[i - 2](x, eps[:,i*self.noise_dim:(i+2)*self.noise_dim]) for i in range(2, n_inter_layers * 2 + 1, 2)], dim=1)
                 return self.out_layer(x, eps[:,(n_inter_layers+1)*2*self.noise_dim:])
-        
-         
-class StoUNetNoiseEnd(StoUNet):
-    """Stochastic neural network. UNet shape. Noise only at the end.
-
-    Args:
-        in_dim (int): input dimension 
-        out_dim (int): output dimension
-        num_layer (int, optional): number of layers. Defaults to 2.
-        hidden_dim (int, optional): number of neurons per layer. Defaults to 100.
-        noise_dim (int, optional): noise dimension. Defaults to 100.
-        add_bn (bool, optional): whether to add BN layer. Defaults to True.
-        out_act (str, optional): output activation function. Defaults to None.
-        resblock (bool, optional): whether to use residual blocks. Defaults to False.
-    """
-    def __init__(self, in_dim, out_dim, num_layer=2, hidden_dim=100, 
-                 noise_dim=100, add_bn=True, out_act=None, resblock=False, noise_std=1,
-                 preproc_layer=False, n_vars=5, time_dim=6, val_dim=None, rank_dim=720, preproc_dim=20,
-                 layer_shrinkage=16, extra_input_dim=0):
-        super().__init__(in_dim, out_dim, num_layer=num_layer, hidden_dim=hidden_dim, 
-                 noise_dim=noise_dim, add_bn=add_bn, out_act=out_act, resblock=resblock, noise_std=noise_std,
-                 preproc_layer=preproc_layer, n_vars=n_vars, time_dim=time_dim, val_dim=val_dim, rank_dim=rank_dim, preproc_dim=preproc_dim,
-                 layer_shrinkage=layer_shrinkage, extra_input_dim=extra_input_dim)
-        self.in_dim = in_dim
-        self.out_dim = out_dim
-        self.hidden_dim = hidden_dim
-        self.noise_dim = noise_dim
-        self.add_bn = add_bn
-        self.noise_std = noise_std
-        if out_act == "relu":
-            self.out_act = nn.ReLU(inplace=True)
-        elif out_act == "sigmoid":
-            self.out_act = nn.Sigmoid()
-        elif out_act == "softmax":
-            self.out_act = nn.Sigmoid() if out_dim == 1 else nn.Softmax(dim=1)
-        elif out_act == "tanh":
-            self.out_act = nn.Tanh()
-        else:
-            self.out_act = None
-        
-        self.num_blocks = None
-        if resblock:
-            if num_layer % 2 != 0:
-                num_layer += 1
-                print("The number of layers must be an even number for residual blocks. Changed to {}".format(str(num_layer)))
-            num_blocks = num_layer // 2
-            self.num_blocks = num_blocks
-        self.resblock = resblock
-        self.num_layer = num_layer
-        
-        self.preproc = preproc_layer
-        if self.preproc:
-            self.val_dim = val_dim
-            self.time_dim = time_dim
-            self.rank_dim = rank_dim
-            self.n_vars = n_vars
-            if val_dim is None:
-                one_hot_dim = in_dim - n_vars*720 - time_dim - extra_input_dim
-                self.one_hot_dim = one_hot_dim
-                self.extra_input_dim = extra_input_dim
-                if one_hot_dim > 0 and extra_input_dim > 0:
-                    self.preproc_layers =  nn.ModuleList([ 
-                        nn.Sequential(nn.Linear(rank_dim,preproc_dim), nn.ReLU(inplace=True)) for i in range(n_vars)] + [
-                        nn.Sequential(nn.Linear(time_dim,preproc_dim), nn.ReLU(inplace=True)),
-                        nn.Sequential(nn.Linear(one_hot_dim,preproc_dim), nn.ReLU(inplace=True)),
-                        nn.Sequential(nn.Linear(extra_input_dim,preproc_dim), nn.ReLU(inplace=True))])
-                    in_dim = preproc_dim * (n_vars + 3)
-                elif one_hot_dim > 0:
-                    self.preproc_layers =  nn.ModuleList([ 
-                        nn.Sequential(nn.Linear(rank_dim,preproc_dim), nn.ReLU(inplace=True)) for i in range(n_vars)] + [
-                        nn.Sequential(nn.Linear(time_dim,preproc_dim), nn.ReLU(inplace=True)),
-                        nn.Sequential(nn.Linear(one_hot_dim,preproc_dim), nn.ReLU(inplace=True))])
-                    in_dim = preproc_dim * (n_vars + 2)
-                elif extra_input_dim > 0:
-                    self.preproc_layers =  nn.ModuleList([ 
-                        nn.Sequential(nn.Linear(rank_dim,preproc_dim), nn.ReLU(inplace=True)) for i in range(n_vars)] + [
-                        nn.Sequential(nn.Linear(time_dim,preproc_dim), nn.ReLU(inplace=True)),
-                        nn.Sequential(nn.Linear(extra_input_dim,preproc_dim), nn.ReLU(inplace=True))])
-                    in_dim = preproc_dim * (n_vars + 2)
-                else:
-                    self.preproc_layers =  nn.ModuleList([ 
-                        nn.Sequential(nn.Linear(rank_dim,preproc_dim), nn.ReLU(inplace=True)) for i in range(n_vars)] + [
-                        nn.Sequential(nn.Linear(time_dim,preproc_dim), nn.ReLU(inplace=True))])
-                    in_dim = preproc_dim * (n_vars + 1)
-                self.in_dim = in_dim
-            else:
-                if extra_input_dim > 0:
-                    raise NotImplementedError("Extra input dimension not implemented yet.")
-                one_hot_dim = in_dim - n_vars*720 - time_dim - 5*val_dim
-                self.one_hot_dim = one_hot_dim
-                # pdb.set_trace()
-                if one_hot_dim > 0:
-                    self.preproc_layers =  nn.ModuleList([
-                        RankValueLayer(rank_dim=rank_dim, val_dim=val_dim, preproc_rk_dim=preproc_dim, preproc_val_dim=preproc_dim//2) for i in range(n_vars)] + [
-                        nn.Sequential(nn.Linear(time_dim,preproc_dim), nn.ReLU(inplace=True)),
-                        nn.Sequential(nn.Linear(one_hot_dim,preproc_dim), nn.ReLU(inplace=True)),
-                    ])
-                else:
-                    self.preproc_layers =  nn.ModuleList([
-                        RankValueLayer(rank_dim=rank_dim, val_dim=val_dim, preproc_rk_dim=preproc_dim, preproc_val_dim=preproc_dim//2) for i in range(n_vars)] + [
-                        nn.Sequential(nn.Linear(time_dim,preproc_dim), nn.ReLU(inplace=True)),
-                    ])
-                in_dim = preproc_dim * (n_vars + 2) + preproc_dim//2 * n_vars
-                self.in_dim = in_dim
-        
-        if self.resblock: 
-            if self.num_blocks == 1:
-                self.net = StoResBlock_ExternalNoise(dim=in_dim, hidden_dim=hidden_dim, out_dim=out_dim, 
-                                       noise_dim=0, add_bn=add_bn, out_act=out_act, noise_std=noise_std)
-            else:
-                if self.num_blocks > 2:
-                    self.input_layer = StoResBlock_ExternalNoise(dim=in_dim, hidden_dim=hidden_dim, out_dim=hidden_dim, 
-                                               noise_dim=0, add_bn=add_bn, out_act="relu", noise_std=noise_std)
-                else:
-                    self.input_layer = StoResBlock_ExternalNoise(dim=in_dim, hidden_dim=hidden_dim, out_dim=out_dim // layer_shrinkage, 
-                                               noise_dim=0, add_bn=add_bn, out_act="relu", noise_std=noise_std)
-                if self.num_blocks > 2:
-                    self.small_inter_layer = nn.Sequential(*[StoResBlock_ExternalNoise(dim=hidden_dim, noise_dim=0, add_bn=add_bn, out_act="relu")]*(self.num_blocks - 3))
-                    self.second_to_last = StoResBlock_ExternalNoise(dim=hidden_dim, hidden_dim=hidden_dim, out_dim=out_dim // layer_shrinkage,
-                                                    noise_dim=noise_dim, add_bn=add_bn, out_act="relu", noise_std=noise_std)
-                    
-                    layers = list(self.small_inter_layer.children()) + [self.second_to_last]
-                    self.inter_layer = nn.Sequential(*layers)
-                
-                else:
-                    self.inter_layer = nn.Sequential(nn.Identity())
-                
-                if layer_shrinkage > 3:
-                    hd = out_dim // (layer_shrinkage // 4)
-                elif layer_shrinkage > 1:
-                    hd = out_dim // (layer_shrinkage // 2)
-                else:
-                    hd = out_dim
-                self.out_layer = StoResBlock_ExternalNoise(dim=out_dim // layer_shrinkage, hidden_dim = hd, out_dim=out_dim, 
-                                             noise_dim=noise_dim, add_bn=add_bn, out_act=out_act, noise_std=noise_std) # output layer with concatenated noise
-        else:
-            raise ValueError("Only resblock version implemented yet.")
-   
             
 
-class StoEncNet(StoNetBase):
-    """Stochastic neural network. Encoder shape (first larger layers, then decreasing size)
-
-    Args:
-        in_dim (int): input dimension 
-        out_dim (int): output dimension
-        num_layer (int, optional): number of layers. Defaults to 2.
-        hidden_dim (int, optional): number of neurons per layer. Defaults to 100.
-        noise_dim (int, optional): noise dimension. Defaults to 100.
-        add_bn (bool, optional): whether to add BN layer. Defaults to True.
-        out_act (str, optional): output activation function. Defaults to None.
-        resblock (bool, optional): whether to use residual blocks. Defaults to False.
-    """
-    def __init__(self, in_dim, out_dim, num_layer=2, hidden_dim=100, 
-                 noise_dim=100, add_bn=True, out_act=None, resblock=False, noise_std=1,
-                 preproc_layer=False, n_vars=5, time_dim=6, val_dim=None, rank_dim=720, preproc_dim=20,
-                 layer_growth = 16, extra_input_dim=0):
-        super().__init__(noise_dim)
-        self.in_dim = in_dim
-        self.out_dim = out_dim
-        self.hidden_dim = hidden_dim
-        self.noise_dim = noise_dim
-        self.add_bn = add_bn
-        self.noise_std = noise_std
-        if out_act == "relu":
-            self.out_act = nn.ReLU(inplace=True)
-        elif out_act == "sigmoid":
-            self.out_act = nn.Sigmoid()
-        elif out_act == "softmax":
-            self.out_act = nn.Sigmoid() if out_dim == 1 else nn.Softmax(dim=1)
-        elif out_act == "tanh":
-            self.out_act = nn.Tanh()
-        else:
-            self.out_act = None
-        
-        self.num_blocks = None
-        if resblock:
-            if num_layer % 2 != 0:
-                num_layer += 1
-                print("The number of layers must be an even number for residual blocks. Changed to {}".format(str(num_layer)))
-            num_blocks = num_layer // 2
-            self.num_blocks = num_blocks
-        self.resblock = resblock
-        self.num_layer = num_layer
-        
-        self.preproc = preproc_layer
-        if self.preproc:
-            self.val_dim = val_dim
-            self.time_dim = time_dim
-            self.rank_dim = rank_dim
-            self.n_vars = n_vars
-            if val_dim is None:
-                one_hot_dim = in_dim - n_vars*720 - time_dim - extra_input_dim
-                self.one_hot_dim = one_hot_dim
-                self.extra_input_dim = extra_input_dim
-                if one_hot_dim > 0 and extra_input_dim > 0:
-                    self.preproc_layers =  nn.ModuleList([ 
-                        nn.Sequential(nn.Linear(rank_dim,preproc_dim), nn.ReLU(inplace=True)) for i in range(n_vars)] + [
-                        nn.Sequential(nn.Linear(time_dim,preproc_dim), nn.ReLU(inplace=True)),
-                        nn.Sequential(nn.Linear(one_hot_dim,preproc_dim), nn.ReLU(inplace=True)),
-                        nn.Sequential(nn.Linear(extra_input_dim,preproc_dim), nn.ReLU(inplace=True))])
-                    in_dim = preproc_dim * (n_vars + 3)
-                elif one_hot_dim > 0:
-                    self.preproc_layers =  nn.ModuleList([ 
-                        nn.Sequential(nn.Linear(rank_dim,preproc_dim), nn.ReLU(inplace=True)) for i in range(n_vars)] + [
-                        nn.Sequential(nn.Linear(time_dim,preproc_dim), nn.ReLU(inplace=True)),
-                        nn.Sequential(nn.Linear(one_hot_dim,preproc_dim), nn.ReLU(inplace=True))])
-                    in_dim = preproc_dim * (n_vars + 2)
-                elif extra_input_dim > 0:
-                    self.preproc_layers =  nn.ModuleList([ 
-                        nn.Sequential(nn.Linear(rank_dim,preproc_dim), nn.ReLU(inplace=True)) for i in range(n_vars)] + [
-                        nn.Sequential(nn.Linear(time_dim,preproc_dim), nn.ReLU(inplace=True)),
-                        nn.Sequential(nn.Linear(extra_input_dim,preproc_dim), nn.ReLU(inplace=True))])
-                    in_dim = preproc_dim * (n_vars + 2)
-                else:
-                    self.preproc_layers =  nn.ModuleList([ 
-                        nn.Sequential(nn.Linear(rank_dim,preproc_dim), nn.ReLU(inplace=True)) for i in range(n_vars)] + [
-                        nn.Sequential(nn.Linear(time_dim,preproc_dim), nn.ReLU(inplace=True))])
-                    in_dim = preproc_dim * (n_vars + 1)
-                self.in_dim = in_dim
-            else:
-                if extra_input_dim > 0:
-                    raise NotImplementedError("Extra input dimension not implemented yet.")
-                one_hot_dim = in_dim - n_vars*720 - time_dim - 5*val_dim
-                self.one_hot_dim = one_hot_dim
-                # pdb.set_trace()
-                if one_hot_dim > 0:
-                    self.preproc_layers =  nn.ModuleList([
-                        RankValueLayer(rank_dim=rank_dim, val_dim=val_dim, preproc_rk_dim=preproc_dim, preproc_val_dim=preproc_dim//2) for i in range(n_vars)] + [
-                        nn.Sequential(nn.Linear(time_dim,preproc_dim), nn.ReLU(inplace=True)),
-                        nn.Sequential(nn.Linear(one_hot_dim,preproc_dim), nn.ReLU(inplace=True)),
-                    ])
-                else:
-                    self.preproc_layers =  nn.ModuleList([
-                        RankValueLayer(rank_dim=rank_dim, val_dim=val_dim, preproc_rk_dim=preproc_dim, preproc_val_dim=preproc_dim//2) for i in range(n_vars)] + [
-                        nn.Sequential(nn.Linear(time_dim,preproc_dim), nn.ReLU(inplace=True)),
-                    ])
-                in_dim = preproc_dim * (n_vars + 2) + preproc_dim//2 * n_vars
-                self.in_dim = in_dim
-        
-        if self.resblock: 
-            if self.num_blocks == 1:
-                self.net = StoResBlock_ExternalNoise(dim=in_dim, hidden_dim=hidden_dim, out_dim=out_dim, 
-                                       noise_dim=noise_dim, add_bn=add_bn, out_act=out_act, noise_std=noise_std)
-            else:
-                if self.num_blocks > 2:
-                    self.input_layer = StoResBlock_ExternalNoise(dim=in_dim, hidden_dim=hidden_dim, out_dim=out_dim * layer_growth, 
-                                               noise_dim=noise_dim, add_bn=add_bn, out_act="relu", noise_std=noise_std)
-                else:
-                    self.input_layer = StoResBlock_ExternalNoise(dim=in_dim, hidden_dim=hidden_dim, out_dim=out_dim * layer_growth, 
-                                               noise_dim=noise_dim, add_bn=add_bn, out_act="relu", noise_std=noise_std)
-                if self.num_blocks > 2:
-                    self.small_inter_layer = nn.Sequential(*[StoResBlock_ExternalNoise(dim=out_dim * layer_growth, noise_dim=noise_dim, add_bn=add_bn, out_act="relu")]*(self.num_blocks - 3))
-                    self.second_to_last = StoResBlock_ExternalNoise(dim=out_dim * layer_growth, hidden_dim=out_dim * layer_growth, out_dim=out_dim * layer_growth,
-                                                    noise_dim=noise_dim, add_bn=add_bn, out_act="relu", noise_std=noise_std)
-                    
-                    layers = list(self.small_inter_layer.children()) + [self.second_to_last]
-                    self.inter_layer = nn.Sequential(*layers)
-                
-                else:
-                    self.inter_layer = nn.Sequential(nn.Identity())
-                
-                if layer_growth > 3:
-                    hd = out_dim * (layer_growth // 4)
-                elif layer_growth > 1:
-                    hd = out_dim * (layer_growth // 2)
-                else:
-                    hd = out_dim
-                self.out_layer = StoResBlock_ExternalNoise(dim=out_dim * layer_growth, hidden_dim = hd, out_dim=out_dim, 
-                                             noise_dim=noise_dim, add_bn=add_bn, out_act=out_act, noise_std=noise_std) # output layer with concatinated noise
-        else:
-            raise ValueError("Only resblock version implemented yet.")
-        
-    
-    def sample_onebatch(self, x, sample_size=100, expand_dim=True):
-        """Sampling new response data (for one batch of data).
-
-        Args:
-            x (torch.Tensor): new data of predictors of shape [data_size, covariate_dim]
-            sample_size (int, optional): new sample size. Defaults to 100.
-            expand_dim (bool, optional): whether to expand the sample dimension. Defaults to True.
-
-        Returns:
-            torch.Tensor of shape (data_size, response_dim, sample_size) if expand_dim else (data_size*sample_size, response_dim), where response_dim could have multiple channels.
-        """
-        data_size = x.size(0) ## input data size
-        with torch.no_grad():
-            ## repeat the data for sample_size times, get a tensor [data, data, ..., data]
-            x_rep = x.repeat(sample_size, 1)
-            ## samples of shape (data_size*sample_size, response_dim) such that samples[data_size*(i-1):data_size*i,:] contains one sample for each data point, for i = 1, ..., sample_size
-            samples = self.forward(x=x_rep).detach()
-        if not expand_dim: # or sample_size == 1:
-            return samples
-        else:
-            expand_dim = len(samples.shape)
-            samples = samples.unsqueeze(expand_dim) ## (data_size*sample_size, response_dim, 1)
-            ## a list of length data_size, each element is a tensor of shape (data_size, response_dim, 1)
-            samples = list(torch.split(samples, data_size)) 
-            samples = torch.cat(samples, dim=expand_dim) ## (data_size, response_dim, sample_size)
-            return samples
-            # without expanding dimensions:
-            # samples.reshape(-1, *samples.shape[1:-1])
-    
-    def sample_batch(self, x, sample_size=100, expand_dim=True, batch_size=None):
-        """Sampling with mini-batches; only used when out-of-memory.
-
-        Args:
-            x (torch.Tensor): new data of predictors of shape [data_size, covariate_dim]
-            sample_size (int, optional): new sample size. Defaults to 100.
-            expand_dim (bool, optional): whether to expand the sample dimension. Defaults to True.
-            batch_size (int, optional): batch size. Defaults to None.
-
-        Returns:
-            torch.Tensor of shape (data_size, response_dim, sample_size) if expand_dim else (data_size*sample_size, response_dim), where response_dim could have multiple channels.
-        """
-        if batch_size is not None and batch_size < x.shape[0]:
-            raise ValueError("Shape of x and batch size need to agree in sample_batch.")
-        else:
-            samples = self.sample_onebatch(x, sample_size, expand_dim)
-        return samples
-    
-    def sample(self, x, sample_size=100, expand_dim=True):
-        batch_size = x.shape[0]
-        samples = self.sample_batch(x, sample_size, expand_dim, batch_size)
-        return samples
-        
-    def forward(self, x, eps=None):
-        if self.preproc:
-            if self.val_dim is None:
-                variable_dim = self.rank_dim
-            else:
-                variable_dim = self.rank_dim + self.val_dim
-            # preproc layer is deterministic, so no noise
-            assert x.shape[-1] == variable_dim * self.n_vars + self.time_dim + self.one_hot_dim + self.extra_input_dim
-            if self.one_hot_dim > 0 and self.extra_input_dim > 0:
-                x = torch.cat([layer(x[:,i*variable_dim:(i+1)*variable_dim]) for i, layer in enumerate(self.preproc_layers[0:self.n_vars])] +
-                            [self.preproc_layers[self.n_vars](x[:, (variable_dim*self.n_vars):(variable_dim*self.n_vars+self.time_dim)])] + 
-                            [self.preproc_layers[self.n_vars+1](x[:, (variable_dim*self.n_vars+self.time_dim):(variable_dim*self.n_vars+self.time_dim+self.one_hot_dim)])] +
-                            [self.preproc_layers[self.n_vars+2](x[:, -self.extra_input_dim:])], dim=1)
-            elif self.one_hot_dim > 0:
-                x = torch.cat([layer(x[:,i*variable_dim:(i+1)*variable_dim]) for i, layer in enumerate(self.preproc_layers[0:self.n_vars])] +
-                            [self.preproc_layers[self.n_vars](x[:, (variable_dim*self.n_vars):(variable_dim*self.n_vars+self.time_dim)])] + 
-                            [self.preproc_layers[self.n_vars+1](x[:, (variable_dim*self.n_vars+self.time_dim):])], dim=1)
-            elif self.extra_input_dim > 0:
-                x = torch.cat([layer(x[:,i*variable_dim:(i+1)*variable_dim]) for i, layer in enumerate(self.preproc_layers[0:self.n_vars])] +
-                            [self.preproc_layers[self.n_vars](x[:, (variable_dim*self.n_vars):(variable_dim*self.n_vars+self.time_dim)])] + 
-                            [self.preproc_layers[self.n_vars+1](x[:, self.extra_input_dim:])], dim=1)            
-            else:
-                x = torch.cat([layer(x[:,i*variable_dim:(i+1)*variable_dim]) for i, layer in enumerate(self.preproc_layers[0:self.n_vars])] +
-                            [self.preproc_layers[self.n_vars](x[:, (variable_dim*self.n_vars):(variable_dim*self.n_vars+self.time_dim)])], dim=1)
-        if eps is None: # no noise supplied, just sample noise internally
-            if self.num_blocks == 1:
-                return self.net(x)
-            else:
-                x = self.input_layer(x)
-                x = self.inter_layer(x)
-                return self.out_layer(x)
-        else: # need to pass noise externally
-            assert eps.size(0) == x.size(0)
-            if self.num_blocks == 1:
-                return self.net(x, eps = eps)
-            else:
-                assert eps.size(1) == self.num_blocks*2*self.noise_dim
-                eps1 = eps[:,0:(2*self.noise_dim)]
-                x = self.input_layer(x, eps1)
-                n_inter_layers = len(self.inter_layer)               
-                x = torch.cat([self.inter_layer[i - 2](x, eps[:,i*self.noise_dim:(i+2)*self.noise_dim]) for i in range(2, n_inter_layers * 2 + 1, 2)], dim=1)
-                return self.out_layer(x, eps[:,(n_inter_layers+1)*2*self.noise_dim:])
-    
-    ####
-    
-    def sample_temporal(self, x, sample_size=10, expand_dim=True, start_xc = None):
-        if expand_dim:
-            return torch.stack([self.forward_temporal(x, eps=None, start_xc = start_xc) for k in range(sample_size)], dim = -1)
-        else:
-            return torch.cat([self.forward_temporal(x, eps=None, start_xc = start_xc) for k in range(sample_size)], dim = -1)
-    
-    def forward_temporal(self, x, eps=None, start_xc = None):
-        if self.preproc:
-            raise NotImplementedError("Preprocessing not implemented for forward_temporal.")
-        if eps is None: # no noise supplied, just sample noise internally
-            time_series = torch.empty((x.size(0), start_xc.size(0)), device=x.device)
-            for i in range(len(x)):
-                if i == 0:
-                    time_series[i] = self.forward(torch.cat([x[i].unsqueeze(0), start_xc.unsqueeze(0)], dim=1))[0] # forward with BS = 1, dim (1, spatial_dim)
-                else:
-                    time_series[i] = self.forward(torch.cat([x[i].unsqueeze(0), time_series[i-1].unsqueeze(0)], dim=1))[0]
-            return time_series
-        else:
-            raise NotImplementedError("External noise not implemented for forward_temporal.")
-    
 class StoNet(StoNetBase):
     """Stochastic neural network.
 
@@ -1502,12 +1046,13 @@ class CoarseSuperWrapper(nn.Module):
 
 
 class ModelSpec:
-    def __init__(self, model, vars_as_channels=False, use_one_hot=False, noise_dim=None, one_hot_option="concat"):
+    def __init__(self, model, vars_as_channels=False, use_one_hot=False, noise_dim=None, one_hot_option="concat", include_orog=False):
         self.model = model
         self.vars_as_channels = vars_as_channels
         self.use_one_hot = use_one_hot
         self.noise_dim = noise_dim  # None = no noise, -1 = pass all remaining noise
         self.one_hot_option = one_hot_option
+        self.include_orog = include_orog
 
 class HierarchicalWrapper(nn.Module):
     def __init__(self, model_specs, n_vars=1, one_hot_dim=0):
@@ -1516,7 +1061,7 @@ class HierarchicalWrapper(nn.Module):
         self.n_vars = n_vars
         self.one_hot_dim = one_hot_dim
         
-    def _apply_remaining_models(self, out, specs, eps=None, x_onehot=None, cls_ids=None, start_idx=1, return_intermediates=False):
+    def _apply_remaining_models(self, out, specs, eps=None, x_onehot=None, cls_ids=None, start_idx=1, return_intermediates=False, orog=None):
         """Pass the output through models[start_idx:], shared by forward and forward_temporal."""
         noise_cursor = 0
         intermediates = []
@@ -1543,10 +1088,33 @@ class HierarchicalWrapper(nn.Module):
                                   x=x_onehot, one_hot_dim=self.one_hot_dim)
 
             # Forward pass
-            if spec.one_hot_option == "concat" or not spec.use_one_hot:
-                out = model(out, eps=eps_input)
-            elif spec.one_hot_option == "argument" and spec.use_one_hot and cls_ids is not None:
-                out = model(out, cls_ids=cls_ids, eps=eps_input)
+            if spec.include_orog and orog is not None:
+                # need to pool orog to the same spatial dimension as out before passing
+                # dataloading loads orog on original scale
+                if orog.size(-1) != out.size(-1):
+                    # case 1: flattened
+                    if len(out.shape) == 2 and len(orog.shape) == 2:
+                        out_dim = int(out.size(-1) ** 0.5)
+                        orog_dim = int(orog.size(-1) ** 0.5)
+                        kernel_size_hr = (orog_dim // out_dim) // 2 # orog has one resolution higher than out
+                        orog_pooled = torch.nn.functional.avg_pool2d(orog.view(-1, 1, orog_dim, orog_dim), kernel_size=kernel_size_hr)
+                        orog_pooled = orog_pooled.view(orog_pooled.size(0), -1)
+                    # case 2: unflattened with channels as last dim
+                    elif len(out.shape) == 3 and len(orog.shape) == 3: 
+                        kernel_size_hr = orog.size(-1) // out.size(-1)
+                        orog_pooled = torch.nn.functional.avg_pool2d(orog.view(-1, 1, orog.size(-2), orog.size(-1)), kernel_size=kernel_size_hr)
+                else:
+                    orog_pooled = orog
+                
+                if spec.one_hot_option == "concat" or not spec.use_one_hot:
+                    out = model(out, eps=eps_input, orog=orog_pooled)
+                elif spec.one_hot_option == "argument" and spec.use_one_hot and cls_ids is not None:
+                    out = model(out, cls_ids=cls_ids, eps=eps_input, orog=orog_pooled)
+            else:
+                if spec.one_hot_option == "concat" or not spec.use_one_hot:
+                    out = model(out, eps=eps_input)
+                elif spec.one_hot_option == "argument" and spec.use_one_hot and cls_ids is not None:
+                    out = model(out, cls_ids=cls_ids, eps=eps_input)
 
         if return_intermediates:
             intermediates.append(out)
@@ -1617,13 +1185,13 @@ class HierarchicalWrapper(nn.Module):
 
     #     return torch.stack(samples, dim=-1)
 
-    def forward(self, x, eps=None, x_onehot=None, cls_ids=None, return_intermediates=False):
+    def forward(self, x, eps=None, x_onehot=None, cls_ids=None, return_intermediates=False, orog=None):
         # Just reuse the helper for all models
         return self._apply_remaining_models(x, self.model_specs, eps=eps, x_onehot=x_onehot,
-                                            cls_ids=cls_ids, start_idx=0, return_intermediates=return_intermediates)
+                                            cls_ids=cls_ids, start_idx=0, return_intermediates=return_intermediates, orog=orog)
 
 
-    def forward_temporal(self, x, start_xc, x_onehot=None, cls_ids=None):
+    def forward_temporal(self, x, start_xc, x_onehot=None, cls_ids=None, orog=None):
         """
         Temporal generation for the first model in model_specs.
         After that, apply the remaining models as in forward().
@@ -1645,7 +1213,7 @@ class HierarchicalWrapper(nn.Module):
 
         # Now apply the remaining models
         return self._apply_remaining_models(x, self.model_specs, eps=None, x_onehot=x_onehot,
-                                            cls_ids=cls_ids, start_idx=1, return_intermediates=False)
+                                            cls_ids=cls_ids, start_idx=1, return_intermediates=False, orog=orog)
 
 
     def sample(self, x, sample_size=10, expand_dim=True, **kwargs):

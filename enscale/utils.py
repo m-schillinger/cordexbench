@@ -151,75 +151,6 @@ def add_one_hot(xc, one_hot_in_super=False, conv=False, x=None, one_hot_dim=0):
     return xc
 
 # ---------- NORMALISATION HELPERS -----------------------------------
-def normalise(data, mode = "hr", data_type = "tas", sqrt_transform = True, norm_method = "primitive", 
-              norm_stats=None, root=None, 
-              len_full_data=int(3e4), logit=False, normal=False):
-    if data_type in ["pr", "sfcWind"] and sqrt_transform:
-        name_str = "_sqrt"
-        data = torch.sqrt(data)        
-    else:
-        name_str = ""
-    if norm_method == "primitive":
-        if data_type == "tas":
-            data_norm = (data - 10) / 10
-        elif data_type == "pr":
-            data_norm = data # no norm needed
-        elif data_type == "rsds":
-            data_norm = (data - 150) / 100
-        elif data_type == "sfcWind":
-            data_norm = (data - 2.2) / 0.6
-        elif data_type == "psl":
-            data_norm = (data - 1e5) / 1e3
-        data_norm = data_norm.reshape(data_norm.shape[0], -1)
-    elif norm_method == "normalise_pw":
-        if norm_stats is None:  
-            if mode == "hr":
-                ns_path = os.path.join(root, "norm_stats", mode + "_norm_stats_pixelwise_" + data_type + "_train_ALL" + name_str + ".pt")
-            elif mode == "lr":
-                ns_path = os.path.join(root, "norm_stats", mode + "_norm_stats_pixelwise_" + data_type + "_train_ALL" + name_str + ".pt")        
-        if isinstance(data, torch.Tensor):
-            norm_stats = torch.load(ns_path, map_location=data.device)
-        else:
-            norm_stats = torch.load(ns_path)
-        data_norm = (data - norm_stats["mean"]) / norm_stats["std"]
-        data_norm = data_norm.reshape(data_norm.shape[0], -1)
-    elif norm_method == "normalise_scalar":
-        if norm_stats is None:    
-            if mode == "hr":
-                ns_path = os.path.join(root, "norm_stats", mode + "_norm_stats_full-data_" + data_type + "_train_ALL" + name_str + ".pt")
-            elif mode == "lr":
-                ns_path = os.path.join(root, "norm_stats", mode + "_norm_stats_full-data_" + data_type + "_train_ALL" + name_str + ".pt")        
-            if isinstance(data, torch.Tensor):
-                norm_stats = torch.load(ns_path, map_location=data.device)
-            else:
-                norm_stats = torch.load(ns_path)
-        data_norm = (data - norm_stats["mean"]) / norm_stats["std"]
-        data_norm = data_norm.reshape(data_norm.shape[0], -1)
-    elif norm_method == "uniform":
-        probs = torch.linspace(1, len_full_data, len_full_data) / (len_full_data + 1) 
-        if norm_stats is None:          
-            ns_path = os.path.join(root, "norm_stats", mode + "_norm_stats_ecdf_matrix_" + data_type + "_train_" + "SUBSAMPLE" + name_str + ".pt")
-            norm_stats = torch.load(ns_path)
-        elif norm_stats is None and mode == "hr_avg":
-            ns_path = os.path.join(root, "norm_stats", "hr_avg8x8_norm_stats_ecdf_matrix_" + data_type + "_train_" + "SUBSAMPLE" + name_str + ".pt")
-            norm_stats = torch.load(ns_path)  
-        data_norm = torch.zeros_like(data)
-        for i in range(data.shape[1]):
-            for j in range(data.shape[2]):
-                quantiles = norm_stats[:, i, j]
-                data_norm[:, i, j] = torch.tensor(np.interp(data[:, i, j].detach().cpu().numpy(), quantiles.detach().cpu().numpy(), probs))
-        data_norm = data_norm.reshape(data_norm.shape[0], -1)
-    else:
-        data_norm = data.reshape(data.shape[0], -1)
-        
-    if logit:
-        data_norm = torch.logit(data_norm)
-    elif normal:
-        data_norm = scipy.stats.norm.ppf(data_norm)
-    return data_norm
-
-
-# ...existing code...
 
 def normalise(
     data,
@@ -235,7 +166,9 @@ def normalise(
     period_training="1961-1980_2080-2099",
     len_full_data=int(3e4),  # kept for compatibility (unused)
     logit=False,             # kept for compatibility (unused)
-    normal=False             # kept for compatibility (unused)
+    normal=False,             # kept for compatibility (unused)
+    period="1961-1980",
+    alpha=100,
 ):
     """
     Normalise data with either primitive constants or precomputed stats.
@@ -305,6 +238,69 @@ def normalise(
         data_norm = (data - norm_stats["mean"]) / norm_stats["std"]
         return data_norm.reshape(data_norm.shape[0], -1)
 
+    elif norm_method == "normalise_per_period":
+        if period == "1961-1980":
+            name = "past"
+        elif period == "2080-2099":
+            name = "future"
+        if norm_stats is None:
+            ns_path = os.path.join(root, domain, "norm_stats", f"{mode}_norm_stats_full-data_{name}_{file_base}.pt")
+            if isinstance(data, torch.Tensor):
+                norm_stats = torch.load(ns_path, map_location=data.device)
+            else:
+                norm_stats = torch.load(ns_path)
+        data_norm = (data - norm_stats["mean"]) / norm_stats["std"]
+        return data_norm.reshape(data_norm.shape[0], -1)
+    
+    elif norm_method == "subtract_linear_per_period":
+        if period == "1961-1980":
+            name = "past"
+        elif period == "2080-2099":
+            name = "future"
+        if mode == "hr":
+            if len(data) != 14610//2:
+                raise NotImplementedError("Normalise for subtract_linear_per_period only implemented for full data, not batches.")
+            if norm_stats is None:
+                ns_path = os.path.join(root, domain, "norm_stats", f"{mode}_norm_stats_linear-pred_{name}_{file_base}.pt")
+                if isinstance(data, torch.Tensor):
+                    norm_stats = torch.load(ns_path, map_location=data.device)
+                else:
+                    norm_stats = torch.load(ns_path)
+            data_norm = (data - norm_stats["pred"])
+                
+        elif mode == "lr":
+            if norm_stats is None:
+                ns_path = os.path.join(root, domain, "norm_stats", f"{mode}_norm_stats_full-data_{name}_{file_base}.pt")
+                if isinstance(data, torch.Tensor):
+                    norm_stats = torch.load(ns_path, map_location=data.device)
+                else:
+                    norm_stats = torch.load(ns_path)
+                data_norm = (data - norm_stats["mean"]) / norm_stats["std"]
+        return data_norm.reshape(data_norm.shape[0], -1)
+    
+    elif norm_method == "subtract_linear":
+        # hr_norm_stats_linear-pred_all_Emulator_hist_future_pr_CNRM-CM5_1961-1980_2080-2099_sqrt.pt
+        # file_base = f"{training_experiment}_{data_type}_{gcm_name}_{period_training}{name_str}"
+        
+        if alpha != 100:
+            file_base = f"{training_experiment}_{data_type}_{gcm_name}_{period_training}_alpha-{alpha}{name_str}"
+        if mode == "hr":
+            if training_experiment == "Emulator_hist_future" and (len(data) != 14610 and len(data) != 14600 and len(data) != 14610//2 and len(data) != 14600//2):
+                raise NotImplementedError("Normalise for subtract_linear only implemented for full data, not batches.")
+            if norm_stats is None:
+                ns_path = os.path.join(root, domain, "norm_stats", f"{mode}_norm_stats_linear-pred_all_{file_base}.pt")
+                if isinstance(data, torch.Tensor):
+                    norm_stats = torch.load(ns_path, map_location=data.device)
+                else:
+                    norm_stats = torch.load(ns_path)
+            
+            data_norm = (data - norm_stats["pred"])
+            # data_norm = data_norm / data_norm.std()
+        else:
+            raise NotImplementedError("Normalise for subtract_linear not implemented for lr data")
+        return data_norm.reshape(data_norm.shape[0], -1)
+    
+    
     # Print previously defined ns_path (if any)
     if 'ns_path' in locals():
         print(f"loaded norm stats from: {ns_path}")
@@ -333,7 +329,13 @@ def unnormalise(
     domain="ALPS",
     training_experiment="Emulator_hist_future",
     gcm_name="CNRM-CM5",
-    period_training="1961-1980_2080-2099"
+    period_training="1961-1980_2080-2099",
+    period="1961-1980",
+    mode_data="train",
+    test_params={"period": "historical",
+                              "gcm": "CNRM-CM5",
+                              "framework": "perfect"},
+    alpha=100
 ):
     """
     Unnormalise data using primitive constants or precomputed stats.
@@ -409,6 +411,59 @@ def unnormalise(
         data_norm = data_norm.view(data_norm.shape[0], s1, s2)
         data = data_norm * norm_stats["std"] + norm_stats["mean"]
 
+    elif norm_method == "normalise_per_period":
+        if norm_stats is None:
+            if period == "1961-1980":
+                name = "past"
+            elif period == "2080-2099":
+                name = "future-estimated"
+            ns_path = os.path.join(root, domain, "norm_stats",
+                                   f"{mode}_norm_stats_full-data_{name}_{training_experiment}_{data_type}_{gcm_name}_{period_training}{name_str}.pt")
+            
+            norm_stats = torch.load(ns_path)
+        data_norm = data_norm.view(data_norm.shape[0], s1, s2)
+        data = data_norm * norm_stats["std"] + norm_stats["mean"]
+
+    elif norm_method == "subtract_linear_per_period":
+        if mode == "lr":
+            raise NotImplementedError("unnormalise for subtract_linear_per_period not implemented for lr data")
+        if len(data_norm) != 14610//2:
+            raise NotImplementedError("Unnormalise for subtract_linear_per_period only implemented for full data, not batches.")
+        if norm_stats is None:
+            if period == "1961-1980":
+                name = "past"
+            elif period == "2080-2099":
+                name = "future-estimated"
+            ns_path = os.path.join(root, domain, "norm_stats",
+                                   f"{mode}_norm_stats_linear-pred_{name}_{training_experiment}_{data_type}_{gcm_name}_{period_training}{name_str}.pt")
+            
+            norm_stats = torch.load(ns_path)
+        data_norm = data_norm.view(data_norm.shape[0], s1, s2)
+        data = data_norm + norm_stats["pred"]
+        
+    elif norm_method == "subtract_linear":
+        if mode == "lr":
+            raise NotImplementedError("unnormalise for subtract_linear not implemented for lr data")
+        if len(data_norm) != 14610 and len(data_norm) != 14600 and len(data_norm) != 14610//2 and len(data_norm) != 14600//2:
+            raise NotImplementedError("Unnormalise for subtract_linear only implemented for full data, not batches.")
+    
+        if mode_data == "train":
+            if norm_stats is None:
+                ns_path = os.path.join(root, domain, "norm_stats",
+                                    f"{mode}_norm_stats_linear-pred_all_{training_experiment}_{data_type}_{gcm_name}_{period_training}{name_str}.pt")
+                
+                norm_stats = torch.load(ns_path)
+        elif mode_data == "inference":       
+            
+            if norm_stats is None:
+                ns_path = os.path.join(
+                    "/r/scratch/groups/nm/downscaling/samples_cordexbench/", training_experiment, domain, "no-orog", data_type, "linear_pred",
+                    f"linear-pred_{test_params['period']}_{test_params['framework']}_{test_params['gcm']}_alpha-{alpha}.pt")
+                norm_stats = torch.load(ns_path)
+            
+        data_norm = data_norm.view(data_norm.shape[0], s1, s2)
+        data = data_norm + norm_stats["pred"]
+    
     else:
         # Fallback: reshape only
         data = data_norm.view(data_norm.shape[0], s1, s2)

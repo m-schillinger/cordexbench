@@ -19,8 +19,8 @@ fi
 echo "Submitting job: wd=$wd lambda=$lambda precip=$precip split=$splitresid"
 
 CUDA_VISIBLE_DEVICES=2 python -u train_only-super_multivariate.py \
-    --out_act none \
-    --save_name "_dec${wd}_lam-mse${lambda}_split-resid${splitresid}_PAST-FUTURE-SPLIT" \
+    --out_act relu \
+    --save_name "_relu_dec${wd}_lam-mse${lambda}_split-resid${splitresid}_PAST-FUTURE-SPLIT" \
     --lambda_mse_loss ${lambda} \
     $split_flag \
     $mse_flag \
@@ -33,12 +33,12 @@ CUDA_VISIBLE_DEVICES=2 python -u train_only-super_multivariate.py \
     --hidden_dim 12 \
     --latent_dim 12 \
     --method eng_2step \
-    --variables tasmax \
+    --variables pr \
     --sqrt_transform_in \
     --sqrt_transform_out \
     --num_epochs 1000 \
     --norm_method_input None \
-    --norm_method_output normalise_pw \
+    --norm_method_output scale_pw \
     --kernel_size_hr 2 \
     --kernel_size_lr 4 \
     --sample_every_nepoch 100 \
@@ -47,11 +47,11 @@ CUDA_VISIBLE_DEVICES=2 python -u train_only-super_multivariate.py \
     --batch_size 256 \
     --domain ALPS \
     --tr_te_split past_future \
-    > log_gpu2-tas-ALPS-02-pf.txt 2>&1 &
+    > log_gpu2-pr-ALPS-05-pf.txt 2>&1 &
 
-CUDA_VISIBLE_DEVICES=3 python -u train_only-super_multivariate.py \
-    --out_act none \
-    --save_name "_dec${wd}_lam-mse${lambda}_split-resid${splitresid}_PAST-FUTURE-SPLIT" \
+CUDA_VISIBLE_DEVICES=1 python -u train_only-super_multivariate.py \
+    --out_act relu \
+    --save_name "_relu_dec${wd}_lam-mse${lambda}_split-resid${splitresid}_PAST-FUTURE-SPLIT" \
     --lambda_mse_loss ${lambda} \
     $split_flag \
     $mse_flag \
@@ -64,12 +64,12 @@ CUDA_VISIBLE_DEVICES=3 python -u train_only-super_multivariate.py \
     --hidden_dim 12 \
     --latent_dim 12 \
     --method eng_2step \
-    --variables tasmax \
+    --variables pr \
     --sqrt_transform_in \
     --sqrt_transform_out \
     --num_epochs 1000 \
     --norm_method_input None \
-    --norm_method_output normalise_pw \
+    --norm_method_output scale_pw \
     --kernel_size_hr 1 \
     --kernel_size_lr 2 \
     --sample_every_nepoch 100 \
@@ -78,4 +78,4 @@ CUDA_VISIBLE_DEVICES=3 python -u train_only-super_multivariate.py \
     --batch_size 256 \
     --domain ALPS \
     --tr_te_split past_future \
-    > log_gpu3-tas-ALPS-02-pf.txt 2>&1 &
+    > log_gpu3-pr-ALPS-05-pf.txt 2>&1 &

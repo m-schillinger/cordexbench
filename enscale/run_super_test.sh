@@ -1,9 +1,8 @@
-CUDA_VISIBLE_DEVICES=0 python -u train_only-super_multivariate.py \
-    --out_act none \
-    --save_name "_dec0_lam-mse0_split-residTrue" \
+CUDA_VISIBLE_DEVICES=0 python train_only-super_multivariate.py \
+    --out_act None \
+    --save_name "_dec0_lam-mse0_split-residTrue_test-orog-conv" \
     --lambda_mse_loss 0 \
     --weight_decay 0 \
-    --precip_zeros constant \
     --nicolai_layers \
     --num_neighbors_res 25 \
     --mlp_depth 2 \
@@ -24,4 +23,5 @@ CUDA_VISIBLE_DEVICES=0 python -u train_only-super_multivariate.py \
     --variables_lr all \
     --batch_size 256 \
     --domain ALPS \
-    --add_orography 
+    --add_orography \
+    --orog_conv 
